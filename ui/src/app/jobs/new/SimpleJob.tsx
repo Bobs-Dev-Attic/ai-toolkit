@@ -33,6 +33,7 @@ import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleIm
 import SampleControlImage from '@/components/SampleControlImage';
 import { FlipHorizontal2, FlipVertical2 } from 'lucide-react';
 import { handleModelArchChange } from './utils';
+import PresetPicker from './PresetPicker';
 import { IoFlaskSharp } from 'react-icons/io5';
 import { isMac } from '@/helpers/basic';
 
@@ -85,6 +86,20 @@ export default function SimpleJob({
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
   }, [jobConfig.config.process[0].model.arch]);
+
+  // Detected GPU stats for the PresetPicker. Picks the selected GPU when
+  // gpuIDs is set, otherwise the first GPU.
+  const selectedGpu = useMemo(() => {
+    if (!Array.isArray(gpuList) || gpuList.length === 0) return null;
+    const wanted = gpuIDs ?? `${gpuList[0]?.index ?? 0}`;
+    return gpuList.find((g: any) => `${g?.index}` === wanted) ?? gpuList[0];
+  }, [gpuList, gpuIDs]);
+
+  const detectedVramGB = useMemo(() => {
+    const totalMB = selectedGpu?.memory?.total;
+    if (!totalMB || !Number.isFinite(totalMB)) return undefined;
+    return Math.round(totalMB / 1024);
+  }, [selectedGpu]);
 
   const jobType = useMemo(() => {
     return jobTypeOptions.find(j => j.value === jobConfig.config.process[0].type);
@@ -414,6 +429,12 @@ export default function SimpleJob({
               </>
             )}
           </Card>
+          <PresetPicker
+            archName={jobConfig.config.process[0].model.arch}
+            detectedVramGB={detectedVramGB}
+            gpuName={selectedGpu?.name}
+            setJobConfig={setJobConfig}
+          />
           {disableSections.includes('model.quantize') ? null : (
             <Card title="Quantize / Compile">
               <SelectInput

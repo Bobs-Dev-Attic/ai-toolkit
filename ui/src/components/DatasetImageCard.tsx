@@ -1,174 +1,142 @@
-import React, { useEffect, useState, ReactNode, KeyboardEvent, useRef } from 'react';
-import { FaTrashAlt } from 'react-icons/fa';
-import { openConfirm } from './ConfirmModal';
+import React, { useRef, useEffect, useState, ReactNode, KeyboardEvent } from 'react';
+import { FaCheck } from 'react-icons/fa';
 import classNames from 'classnames';
 import { apiClient } from '@/utils/api';
 import AudioPlayer from './AudioPlayer';
 import { isVideo, isAudio } from '@/utils/basic';
-import useCaptionBatch, { setCachedCaption } from '@/hooks/useCaptionBatch';
 
 interface DatasetImageCardProps {
   imageUrl: string;
   alt: string;
-  isAutoCaptioning: boolean;
   children?: ReactNode;
   className?: string;
-  onDelete?: () => void;
-  onImageClick?: () => void;
-  captionRefreshKey?: number;
-  observerRoot?: Element | null;
-  rootMargin?: string;
-  captionExt?: string;
+  selected?: boolean;
+  onToggleSelect?: () => void;
+  /** Bump this number to force the caption to be re-fetched from disk. */
+  reloadSignal?: number;
+  /** When true, overlay filename / dimensions / size on the image. */
+  showMetadata?: boolean;
+  width?: number;
+  height?: number;
+  size?: number;
 }
+
+const formatSize = (bytes?: number): string => {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const filenameFromPath = (p: string): string => p.replace(/^.*[\\/]/, '');
 
 const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
   imageUrl,
   alt,
-  isAutoCaptioning,
   children,
   className = '',
-  onDelete = () => {},
-  onImageClick,
-  captionRefreshKey = 0,
-  observerRoot = null,
-  rootMargin = '200px 0px',
-  captionExt = 'txt',
+  selected = false,
+  onToggleSelect = () => {},
+  reloadSignal = 0,
+  showMetadata = false,
+  width,
+  height,
+  size,
 }) => {
-  const [loaded, setLoaded] = useState<boolean>(false);
-  const [showAudioPlayer, setShowAudioPlayer] = useState(true);
-  const [pollTick, setPollTick] = useState(0);
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [isVisible, setIsVisible] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
-
-  const isItAVideo = isVideo(imageUrl);
-  const isItAudio = isAudio(imageUrl);
-  const isItImage = !isItAVideo && !isItAudio;
-
-  // Track actual viewport visibility — Virtuoso keeps a buffer of cards mounted
-  // outside the visible region, so we can't rely on mount/unmount alone.
-  useEffect(() => {
-    const el = cardRef.current;
-    if (!el) return;
-
-    const observer = new IntersectionObserver(
-      entries => {
-        for (const entry of entries) {
-          if (entry.target === el) {
-            setIsVisible(entry.isIntersecting);
-          }
-        }
-      },
-      {
-        root: observerRoot ?? null,
-        threshold: 0.01,
-        rootMargin,
-      },
-    );
-
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [observerRoot, rootMargin]);
-
-  // Drive image loads through fetch + AbortController so scrolling past actually
-  // cancels in-flight requests. Debounced 80ms so fast scroll-throughs never
-  // start a request.
-  useEffect(() => {
-    if (!isItImage) return;
-    if (!isVisible) return;
-
-    const controller = new AbortController();
-    let cancelled = false;
-    let objectUrl: string | null = null;
-
-    const timer = window.setTimeout(() => {
-      fetch(`/api/img/${encodeURIComponent(imageUrl)}`, { signal: controller.signal })
-        .then(r => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.blob();
-        })
-        .then(blob => {
-          if (cancelled) return;
-          objectUrl = URL.createObjectURL(blob);
-          setBlobUrl(objectUrl);
-          setLoaded(true);
-        })
-        .catch(err => {
-          if (err?.name !== 'AbortError') console.error('Dataset image fetch failed:', err);
-        });
-    }, 80);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-      setBlobUrl(null);
-      setLoaded(false);
-    };
-  }, [imageUrl, isItImage, isVisible]);
-
-  const combinedRefreshKey = captionRefreshKey + pollTick;
-  const { caption: fetchedCaption, isLoaded: isCaptionLoaded } = useCaptionBatch(
-    isVisible ? imageUrl : null,
-    combinedRefreshKey,
-    captionExt,
-  );
-
+  const [isVisible, setIsVisible] = useState<boolean>(false);
+  const [inViewport, setInViewport] = useState<boolean>(false);
+  const [loaded, setLoaded] = useState<boolean>(false);
+  const [isCaptionLoaded, setIsCaptionLoaded] = useState<boolean>(false);
   const [caption, setCaption] = useState<string>('');
   const [savedCaption, setSavedCaption] = useState<string>('');
-  const dirtyRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Sync from the fetched caption, but don't clobber unsaved local edits.
-  useEffect(() => {
-    if (!isCaptionLoaded) return;
-    if (dirtyRef.current) return;
-    setCaption(fetchedCaption);
-    setSavedCaption(fetchedCaption.trim());
-  }, [fetchedCaption, isCaptionLoaded]);
-
-  // Poll while auto-captioning so backend-written captions show up.
-  useEffect(() => {
-    if (!isAutoCaptioning) return;
-    const interval = setInterval(() => setPollTick(t => t + 1), 5000);
-    return () => clearInterval(interval);
-  }, [isAutoCaptioning]);
+  const fetchCaption = async (force = false) => {
+    if (isCaptionLoaded && !force) return;
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    apiClient
+      .post(`/api/caption/get`, { imgPath: imageUrl }, { signal: controller.signal })
+      .then(res => res.data)
+      .then(data => {
+        if (data) {
+          data = `${data}`;
+        }
+        setCaption(data || '');
+        setSavedCaption(data || '');
+        setIsCaptionLoaded(true);
+      })
+      .catch(error => {
+        if (controller.signal.aborted) return;
+        console.error('Error fetching caption:', error);
+      })
+      .finally(() => {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
+      });
+  };
 
   const saveCaption = () => {
     const trimmedCaption = caption.trim();
-    if (trimmedCaption === savedCaption) {
-      dirtyRef.current = false;
-      return;
-    }
+    if (trimmedCaption === savedCaption) return;
     apiClient
-      .post('/api/img/caption', { imgPath: imageUrl, caption: trimmedCaption, ext: captionExt })
+      .post('/api/img/caption', { imgPath: imageUrl, caption: trimmedCaption })
       .then(() => {
         setSavedCaption(trimmedCaption);
-        setCachedCaption(imageUrl, trimmedCaption, captionExt);
-        dirtyRef.current = false;
       })
       .catch(error => {
         console.error('Error saving caption:', error);
       });
   };
 
-  // Save any pending edit if the card unmounts (e.g. scrolled out of the virtualized window).
-  const latestRef = useRef({ caption, savedCaption, imageUrl, captionExt });
   useEffect(() => {
-    latestRef.current = { caption, savedCaption, imageUrl, captionExt };
-  });
+    if (inViewport && isVisible) {
+      fetchCaption();
+    }
+  }, [inViewport, isVisible]);
+
+  // When the parent signals captions changed (e.g. after generation), drop the
+  // cached caption so it is re-read from disk.
   useEffect(() => {
+    if (reloadSignal === 0) return;
+    setIsCaptionLoaded(false);
+    if (inViewport && isVisible) {
+      fetchCaption(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadSignal]);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0].isIntersecting) {
+          setInViewport(true);
+          if (!isVisible) {
+            setIsVisible(true);
+          }
+        } else {
+          setInViewport(false);
+          abortControllerRef.current?.abort();
+        }
+      },
+      { threshold: 0.1 },
+    );
+
+    if (cardRef.current) {
+      observer.observe(cardRef.current);
+    }
+
     return () => {
-      if (!dirtyRef.current) return;
-      const { caption: c, savedCaption: s, imageUrl: url, captionExt: ext } = latestRef.current;
-      const trimmed = c.trim();
-      if (trimmed === s) return;
-      apiClient
-        .post('/api/img/caption', { imgPath: url, caption: trimmed, ext })
-        .then(() => setCachedCaption(url, trimmed, ext))
-        .catch(err => console.error('Error saving caption on unmount:', err));
+      observer.disconnect();
     };
   }, []);
+
+  const handleLoad = (): void => {
+    setLoaded(true);
+  };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -177,86 +145,90 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
     }
   };
 
-  const handleCaptionChange = (value: string) => {
-    dirtyRef.current = value.trim() !== savedCaption;
-    setCaption(value);
-  };
-
   const isCaptionCurrent = caption.trim() === savedCaption;
 
+  const isItAVideo = isVideo(imageUrl);
+  const isItAudio = isAudio(imageUrl);
+  const isItImage = !isItAVideo && !isItAudio;
+
+  const canSelect = isItImage;
+  const filename = filenameFromPath(imageUrl);
+  // Cache-buster: re-fetch when the file size changes (file was rewritten by an
+  // op) or when the parent bumps reloadSignal (manual Refresh).
+  const cacheKey = `${size ?? 0}-${reloadSignal}`;
+  const mediaSrc = `/api/img/${encodeURIComponent(imageUrl)}?v=${cacheKey}`;
+
   return (
-    <div ref={cardRef} className={`flex flex-col ${className}`}>
-      <div className="relative w-full" style={{ paddingBottom: '100%' }}>
-        <div
-          className={classNames('absolute inset-0 rounded-t-lg shadow-md bg-gray-900', {
-            'animate-pulse': isItImage && !loaded,
-          })}
-        >
-          {isItAVideo && (
-            <video
-              src={`/api/img/${encodeURIComponent(imageUrl)}`}
-              className={`w-full h-full object-contain`}
-              autoPlay={false}
-              loop
-              muted
-              controls
-            />
+    <div
+      className={classNames('flex flex-col rounded-lg', className, {
+        'ring-2 ring-cyan-400': canSelect && selected,
+        'ring-1 ring-transparent': !(canSelect && selected),
+      })}
+    >
+      {/* Square image container */}
+      <div
+        ref={cardRef}
+        className={classNames('relative w-full', { 'cursor-pointer': canSelect })}
+        style={{ paddingBottom: '100%' }}
+        onClick={canSelect ? () => onToggleSelect() : undefined}
+      >
+        <div className="absolute inset-0 rounded-t-lg shadow-md overflow-hidden">
+          {inViewport && isVisible && (
+            <>
+              {isItAVideo && (
+                <video
+                  src={mediaSrc}
+                  className={`w-full h-full object-contain`}
+                  autoPlay={false}
+                  loop
+                  muted
+                  controls
+                />
+              )}
+              {isItAudio && (
+                <AudioPlayer src={mediaSrc} title={imageUrl.replace(/^.*[\\/]/, '')} />
+              )}
+              {isItImage && (
+                <img
+                  src={mediaSrc}
+                  alt={alt}
+                  onLoad={handleLoad}
+                  className={`w-full h-full object-contain transition-opacity duration-300 ${
+                    loaded ? 'opacity-100' : 'opacity-0'
+                  }`}
+                />
+              )}
+            </>
           )}
-          {isItAudio && !showAudioPlayer && (
-            <div
-              className="w-full h-full cursor-pointer flex items-center justify-center bg-gray-900"
-              onClick={() => setShowAudioPlayer(true)}
-            >
-              <img
-                src={`/api/audio/art/${encodeURIComponent(imageUrl)}`}
-                alt={alt}
-                className="w-full h-full object-contain"
-                onError={e => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                }}
-              />
+          {!isVisible && (
+            <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-75 rounded-t-lg">
+              <span className="text-white text-lg"></span>
             </div>
           )}
-          {isItAudio && showAudioPlayer && (
-            <AudioPlayer src={`/api/img/${encodeURIComponent(imageUrl)}`} title={imageUrl.replace(/^.*[\\/]/, '')} />
-          )}
-          {isItImage && blobUrl && (
-            <img
-              src={blobUrl}
-              alt={alt}
-              onClick={onImageClick}
-              className={classNames('w-full h-full object-contain', {
-                'cursor-zoom-in': !!onImageClick,
-              })}
-            />
-          )}
           {children && <div className="absolute inset-0 flex items-center justify-center">{children}</div>}
-          <div className="absolute top-1 right-1 flex space-x-2 z-10">
-            <button
-              className="bg-gray-800 rounded-full p-2"
-              onClick={() => {
-                openConfirm({
-                  title: `Delete ${isItAVideo ? 'video' : 'image'}`,
-                  message: `Are you sure you want to delete this ${isItAVideo ? 'video' : 'image'}? This action cannot be undone.`,
-                  type: 'warning',
-                  confirmText: 'Delete',
-                  onConfirm: () => {
-                    apiClient
-                      .post('/api/img/delete', { imgPath: imageUrl })
-                      .then(() => {
-                        console.log('Image deleted:', imageUrl);
-                        onDelete();
-                      })
-                      .catch(error => {
-                        console.error('Error deleting image:', error);
-                      });
-                  },
-                });
-              }}
-            >
-              <FaTrashAlt />
-            </button>
-          </div>
+          {canSelect && (
+            <div className="absolute top-1 left-1 z-10 pointer-events-none">
+              <span
+                className={classNames('flex h-6 w-6 items-center justify-center rounded-md border-2 shadow', {
+                  'border-cyan-400 bg-cyan-500 text-white': selected,
+                  'border-gray-300 bg-gray-900/70 text-transparent': !selected,
+                })}
+              >
+                <FaCheck className="h-3 w-3" />
+              </span>
+            </div>
+          )}
+          {showMetadata && isItImage && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/60 to-transparent px-2 py-1.5 text-xs leading-tight text-white">
+              <div className="truncate font-medium" title={filename}>
+                {filename}
+              </div>
+              <div className="flex justify-between text-[11px] text-gray-200">
+                <span>{width && height ? `${width}×${height}` : ''}</span>
+                <span>{formatSize(size)}</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       <div
@@ -265,7 +237,7 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
           'border-transparent border-2': isCaptionCurrent,
         })}
       >
-        {isCaptionLoaded ? (
+        {inViewport && isVisible && isCaptionLoaded && (
           <form
             onSubmit={e => {
               e.preventDefault();
@@ -274,17 +246,20 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
             onBlur={saveCaption}
           >
             <textarea
-              className={classNames('w-full bg-transparent resize-none outline-none focus:ring-0 focus:outline-none', {
-                'opacity-50 cursor-not-allowed': isAutoCaptioning,
-              })}
+              className="w-full bg-transparent resize-none outline-none focus:ring-0 focus:outline-none"
               value={caption}
               rows={3}
-              readOnly={isAutoCaptioning}
-              onChange={e => handleCaptionChange(e.target.value)}
+              onChange={e => setCaption(e.target.value)}
               onKeyDown={handleKeyDown}
             />
           </form>
-        ) : (
+        )}
+        {(!inViewport || !isVisible) && isCaptionLoaded && (
+          <div className="w-full h-full flex items-center justify-center text-gray-400">
+            {isVisible ? 'Scroll into view to edit caption' : 'Show content to edit caption'}
+          </div>
+        )}
+        {!isCaptionLoaded && (
           <div className="w-full h-full flex items-center justify-center text-gray-400">Loading caption...</div>
         )}
       </div>

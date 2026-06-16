@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { imageSize } from 'image-size';
 import { getDatasetsRoot } from '@/server/settings';
+
+const STATIC_IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 
 export async function POST(request: Request) {
   const datasetsPath = await getDatasetsRoot();
@@ -18,13 +21,25 @@ export async function POST(request: Request) {
     // Find all images recursively
     const imageFiles = findImagesRecursively(datasetFolder);
 
-    // Sort server-side so the client doesn't have to sort large lists
+    // Sort server-side so the client doesn't have to sort large lists.
     imageFiles.sort((a, b) => a.localeCompare(b));
 
-    // Format response
-    const result = imageFiles.map(imgPath => ({
-      img_path: imgPath,
-    }));
+    const result = imageFiles.map(imgPath => {
+      const item: { img_path: string; size?: number; width?: number; height?: number } = { img_path: imgPath };
+      try {
+        item.size = fs.statSync(imgPath).size;
+        // Reading the image header is cheap (a few KB), much faster than
+        // decoding pixels. Only attempt it for still-image formats.
+        if (STATIC_IMAGE_EXT.has(path.extname(imgPath).toLowerCase())) {
+          const dims = imageSize(fs.readFileSync(imgPath));
+          item.width = dims.width;
+          item.height = dims.height;
+        }
+      } catch {
+        // best-effort; leave the fields undefined
+      }
+      return item;
+    });
 
     return NextResponse.json({ images: result });
   } catch (error) {
