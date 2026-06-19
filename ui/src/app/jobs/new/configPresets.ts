@@ -588,6 +588,199 @@ CONFIG_PRESETS['wan22_14b:t2v'] = CONFIG_PRESETS.wan22_14b_i2v;
 CONFIG_PRESETS['ltx2.3'] = CONFIG_PRESETS.ltx2;
 // Qwen-Image:2512 is the same model family with an updated checkpoint.
 CONFIG_PRESETS['qwen_image:2512'] = CONFIG_PRESETS.qwen_image;
+// Qwen-Image-Edit variants share the qwen_image VRAM envelope.
+CONFIG_PRESETS['qwen_image_edit'] = CONFIG_PRESETS.qwen_image;
+CONFIG_PRESETS['qwen_image_edit_plus'] = CONFIG_PRESETS.qwen_image;
+CONFIG_PRESETS['qwen_image_edit_plus:2511'] = CONFIG_PRESETS.qwen_image;
+// HiDream variants share the hidream envelope.
+CONFIG_PRESETS['hidream_e1'] = CONFIG_PRESETS.hidream;
+CONFIG_PRESETS['hidream_o1'] = CONFIG_PRESETS.hidream;
+// FLUX family — Kontext, Chroma, Flex, Klein variants share FLUX-class VRAM.
+CONFIG_PRESETS['flux_kontext'] = CONFIG_PRESETS.flux;
+CONFIG_PRESETS['chroma'] = CONFIG_PRESETS.flux;
+CONFIG_PRESETS['zeta_chroma'] = CONFIG_PRESETS.flux;
+CONFIG_PRESETS['flex1'] = CONFIG_PRESETS.flux;
+CONFIG_PRESETS['flex2'] = CONFIG_PRESETS.flux;
+CONFIG_PRESETS['flux2'] = CONFIG_PRESETS.flux;
+CONFIG_PRESETS['flux2_klein_4b'] = CONFIG_PRESETS.flux;
+CONFIG_PRESETS['flux2_klein_9b'] = CONFIG_PRESETS.flux;
+
+// ─────────────────────────────────────────────────────────────────────
+// SD 1.5 — much lighter than SDXL.
+// ─────────────────────────────────────────────────────────────────────
+CONFIG_PRESETS['sd15'] = [
+  {
+    id: 'sd15-memory',
+    label: 'Memory',
+    description: '4–6 GB. For low-VRAM cards. 512px training.',
+    approxVramGB: 5,
+    tier: 'memory',
+    overrides: {
+      'config.process[0].model.quantize': false,
+      'config.process[0].model.quantize_te': false,
+      'config.process[0].train.gradient_checkpointing': true,
+      'config.process[0].train.gradient_accumulation': 4,
+      'config.process[0].train.batch_size': 1,
+      'config.process[0].datasets[0].cache_latents_to_disk': true,
+      'config.process[0].datasets[0].resolution': [512],
+    },
+  },
+  {
+    id: 'sd15-balanced',
+    label: 'Balanced',
+    description: '6–10 GB. Good default for 8 GB+ cards.',
+    approxVramGB: 8,
+    tier: 'balanced',
+    overrides: {
+      'config.process[0].model.quantize': false,
+      'config.process[0].model.quantize_te': false,
+      'config.process[0].train.gradient_checkpointing': true,
+      'config.process[0].train.gradient_accumulation': 1,
+      'config.process[0].train.batch_size': 2,
+      'config.process[0].datasets[0].cache_latents_to_disk': true,
+      'config.process[0].datasets[0].resolution': [512, 768],
+    },
+  },
+  {
+    id: 'sd15-quality',
+    label: 'Quality',
+    description: '12+ GB. Larger batches and resolution mix.',
+    approxVramGB: 14,
+    tier: 'quality',
+    overrides: {
+      'config.process[0].model.quantize': false,
+      'config.process[0].model.quantize_te': false,
+      'config.process[0].train.gradient_checkpointing': false,
+      'config.process[0].train.gradient_accumulation': 1,
+      'config.process[0].train.batch_size': 4,
+      'config.process[0].datasets[0].cache_latents_to_disk': true,
+      'config.process[0].datasets[0].resolution': [512, 768, 1024],
+    },
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────
+// Generic image-model presets — model-agnostic starting points for arches
+// without a tuned recipe yet (Lumina2, OmniGen2, Z-Image, ERNIE-Image,
+// Nucleus-Image, Ideogram4, PRX-Pixel, Boogu Image, etc.). The values are
+// conservative; users should verify VRAM and tweak from here.
+// ─────────────────────────────────────────────────────────────────────
+const GENERIC_IMAGE_PRESETS: ConfigPreset[] = [
+  {
+    id: 'generic-image-memory',
+    label: 'Memory',
+    description: 'Starting point ~12–16 GB. Quantized base, gradient accumulation, 512–768 resolution.',
+    approxVramGB: 14,
+    tier: 'memory',
+    overrides: {
+      'config.process[0].model.quantize': true,
+      'config.process[0].model.quantize_te': true,
+      'config.process[0].model.low_vram': true,
+      'config.process[0].train.gradient_checkpointing': true,
+      'config.process[0].train.gradient_accumulation': 4,
+      'config.process[0].train.batch_size': 1,
+      'config.process[0].datasets[0].cache_latents_to_disk': true,
+      'config.process[0].datasets[0].resolution': [512, 768],
+    },
+  },
+  {
+    id: 'generic-image-balanced',
+    label: 'Balanced',
+    description: 'Starting point ~16–22 GB. Quantized base, no accumulation, mixed resolution.',
+    approxVramGB: 20,
+    tier: 'balanced',
+    overrides: {
+      'config.process[0].model.quantize': true,
+      'config.process[0].model.quantize_te': true,
+      'config.process[0].model.low_vram': false,
+      'config.process[0].train.gradient_checkpointing': true,
+      'config.process[0].train.gradient_accumulation': 1,
+      'config.process[0].train.batch_size': 1,
+      'config.process[0].datasets[0].cache_latents_to_disk': true,
+      'config.process[0].datasets[0].resolution': [512, 768, 1024],
+    },
+  },
+  {
+    id: 'generic-image-quality',
+    label: 'Quality',
+    description: 'Starting point ~32+ GB. Full precision base for the best fidelity.',
+    approxVramGB: 32,
+    tier: 'quality',
+    overrides: {
+      'config.process[0].model.quantize': false,
+      'config.process[0].model.quantize_te': false,
+      'config.process[0].model.low_vram': false,
+      'config.process[0].train.gradient_checkpointing': true,
+      'config.process[0].train.gradient_accumulation': 1,
+      'config.process[0].train.batch_size': 1,
+      'config.process[0].datasets[0].cache_latents_to_disk': true,
+      'config.process[0].datasets[0].resolution': [512, 768, 1024],
+    },
+  },
+];
+
+CONFIG_PRESETS['lumina2'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['omnigen2'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['zimage'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['zimage:turbo'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['zimage:deturbo'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['zimage_l2p'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['ernie_image'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['nucleus_image'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['ideogram4'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['prx_pixel'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['boogu_image'] = GENERIC_IMAGE_PRESETS;
+CONFIG_PRESETS['boogu_image_edit'] = GENERIC_IMAGE_PRESETS;
+
+// ─────────────────────────────────────────────────────────────────────
+// Generic audio-model presets — starting points for ACE-Step etc. Audio
+// training is much lighter than diffusion-image training, so the floors
+// are lower across the board.
+// ─────────────────────────────────────────────────────────────────────
+const GENERIC_AUDIO_PRESETS: ConfigPreset[] = [
+  {
+    id: 'generic-audio-memory',
+    label: 'Memory',
+    description: 'Starting point ~6–8 GB. Conservative settings for low-VRAM cards.',
+    approxVramGB: 8,
+    tier: 'memory',
+    overrides: {
+      'config.process[0].model.quantize': true,
+      'config.process[0].train.gradient_checkpointing': true,
+      'config.process[0].train.gradient_accumulation': 4,
+      'config.process[0].train.batch_size': 1,
+    },
+  },
+  {
+    id: 'generic-audio-balanced',
+    label: 'Balanced',
+    description: 'Starting point ~10–16 GB. Default for 16 GB+ cards.',
+    approxVramGB: 12,
+    tier: 'balanced',
+    overrides: {
+      'config.process[0].model.quantize': true,
+      'config.process[0].train.gradient_checkpointing': true,
+      'config.process[0].train.gradient_accumulation': 1,
+      'config.process[0].train.batch_size': 2,
+    },
+  },
+  {
+    id: 'generic-audio-quality',
+    label: 'Quality',
+    description: 'Starting point ~24+ GB. Full precision, larger batches.',
+    approxVramGB: 24,
+    tier: 'quality',
+    overrides: {
+      'config.process[0].model.quantize': false,
+      'config.process[0].train.gradient_checkpointing': false,
+      'config.process[0].train.gradient_accumulation': 1,
+      'config.process[0].train.batch_size': 4,
+    },
+  },
+];
+
+CONFIG_PRESETS['ace_step_15'] = GENERIC_AUDIO_PRESETS;
+CONFIG_PRESETS['ace_step_15_xl'] = GENERIC_AUDIO_PRESETS;
 
 /**
  * Given a detected VRAM amount in GB, choose which preset to mark

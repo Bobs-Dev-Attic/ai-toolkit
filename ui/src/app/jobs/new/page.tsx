@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { defaultJobConfig, defaultDatasetConfig, migrateJobConfig } from './jobConfig';
-import { jobTypeOptions } from './options';
+import { jobTypeOptions, modelArchs } from './options';
 import { JobConfig } from '@/types';
 import { objectCopy } from '@/utils/basic';
 import { useNestedState, setNestedValue } from '@/utils/hooks';
@@ -14,12 +14,15 @@ import useDatasetList from '@/hooks/useDatasetList';
 import YAML from 'yaml';
 import path from 'path';
 import { TopBar, MainContent } from '@/components/layout';
-import { Button } from '@headlessui/react';
+import { Button, Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
+import { ChevronDown, Save } from 'lucide-react';
+import SaveAsPresetModal from './SaveAsPresetModal';
 import { FaChevronLeft } from 'react-icons/fa';
 import SimpleJob from './SimpleJob';
 import AdvancedConfigEditor from '@/components/AdvancedConfigEditor';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { apiClient } from '@/utils/api';
+import SplitWorkspace, { ChangeEntry } from './SplitWorkspace';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -36,6 +39,37 @@ export default function TrainingForm() {
   const [viewMode, setViewMode] = useState<'simple' | 'advanced' | 'split'>('simple');
   const showAdvancedView = viewMode === 'advanced';
   const isSplit = viewMode === 'split';
+  const [savePresetOpen, setSavePresetOpen] = useState(false);
+
+  // Track recent edits in split mode for the cross-pane highlight overlay.
+  const [splitChanges, setSplitChanges] = useState<ChangeEntry[]>([]);
+  const changeIdRef = useRef(0);
+  const recordChange = (origin: 'simple' | 'advanced', value: any, path?: string) => {
+    if (!isSplit || !path) return;
+    const id = ++changeIdRef.current;
+    setSplitChanges(prev => {
+      // Keep at most 64 entries; older ones drop off when the 30s window expires too.
+      const next = [...prev, { id, path, value, ts: Date.now(), origin }];
+      return next.length > 64 ? next.slice(next.length - 64) : next;
+    });
+  };
+  const setJobConfigFromSimple = (value: any, path?: string) => {
+    recordChange('simple', value, path);
+    setJobConfig(value, path);
+  };
+  const setJobConfigFromAdvanced = (value: any, path?: string) => {
+    recordChange('advanced', value, path);
+    setJobConfig(value, path);
+  };
+  // Drop stale changes after 30s to keep the list bounded.
+  useEffect(() => {
+    if (!isSplit) return;
+    const t = setInterval(() => {
+      const cutoff = Date.now() - 31_000;
+      setSplitChanges(prev => prev.filter(c => c.ts > cutoff));
+    }, 5000);
+    return () => clearInterval(t);
+  }, [isSplit]);
 
   const [jobConfig, setJobConfig] = useNestedState<JobConfig>(objectCopy(migrateJobConfig(defaultJobConfig)));
   const [status, setStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
@@ -274,14 +308,60 @@ export default function TrainingForm() {
           ))}
         </div>
         <div className="pr-1 sm:pr-2">
-          <Button
-            className="text-white bg-amber-600 hover:bg-amber-700 px-2 sm:px-3 py-1 rounded-md text-xs sm:text-base"
-            onClick={() => saveJob(true)}
-            disabled={status === 'saving'}
-          >
-            <span className="sm:hidden">Draft</span>
-            <span className="hidden sm:inline">Save as Draft</span>
-          </Button>
+          <Menu>
+            <MenuButton
+              disabled={status === 'saving'}
+              className="flex items-center gap-1 text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 px-2 sm:px-3 py-1 rounded-md text-xs sm:text-base"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span className="sm:hidden">Save</span>
+              <span className="hidden sm:inline">Save As…</span>
+              <ChevronDown className="w-3.5 h-3.5" />
+            </MenuButton>
+            <MenuItems
+              anchor={{ to: 'bottom end', gap: 6 }}
+              className="bg-gray-900 border border-gray-700 rounded shadow-lg w-56 py-1 z-50 text-sm focus:outline-none"
+            >
+              <MenuItem>
+                {({ focus }) => (
+                  <button
+                    type="button"
+                    onClick={() => saveJob(true)}
+                    className={`w-full flex items-start gap-2 px-3 py-2 text-left ${
+                      focus ? 'bg-gray-800' : ''
+                    }`}
+                  >
+                    <div className="text-amber-400 mt-0.5">📝</div>
+                    <div className="flex-1">
+                      <div className="text-gray-100">Save as Draft</div>
+                      <div className="text-xs text-gray-400">
+                        Park this config under Draft Jobs without queuing it.
+                      </div>
+                    </div>
+                  </button>
+                )}
+              </MenuItem>
+              <MenuItem>
+                {({ focus }) => (
+                  <button
+                    type="button"
+                    onClick={() => setSavePresetOpen(true)}
+                    className={`w-full flex items-start gap-2 px-3 py-2 text-left ${
+                      focus ? 'bg-gray-800' : ''
+                    }`}
+                  >
+                    <div className="text-purple-400 mt-0.5">✨</div>
+                    <div className="flex-1">
+                      <div className="text-gray-100">Save as Preset</div>
+                      <div className="text-xs text-gray-400">
+                        Capture current settings as a reusable preset for any future job.
+                      </div>
+                    </div>
+                  </button>
+                )}
+              </MenuItem>
+            </MenuItems>
+          </Menu>
         </div>
         <div className="flex-shrink-0">
           <Button
@@ -310,11 +390,11 @@ export default function TrainingForm() {
       />
 
       {isSplit ? (
-        <div className="pt-[48px] absolute top-0 left-0 w-full h-full flex">
-          <div className="w-1/2 h-full overflow-auto border-r border-gray-800">
-            <div className="sticky top-0 z-10 bg-gray-900/90 backdrop-blur border-b border-gray-800 px-4 py-1 text-xs uppercase tracking-wide text-gray-400">
-              Simple
-            </div>
+        <SplitWorkspace
+          leftLabel="Simple"
+          rightLabel="Advanced — edits sync live"
+          changes={splitChanges}
+          leftPane={
             <div className="p-4">
               <ErrorBoundary
                 fallback={
@@ -325,7 +405,7 @@ export default function TrainingForm() {
               >
                 <SimpleJob
                   jobConfig={jobConfig}
-                  setJobConfig={setJobConfig}
+                  setJobConfig={setJobConfigFromSimple}
                   status={status}
                   handleSubmit={handleSubmit}
                   runId={runId}
@@ -338,25 +418,25 @@ export default function TrainingForm() {
               </ErrorBoundary>
               <div className="pt-12"></div>
             </div>
-          </div>
-          <div className="w-1/2 h-full overflow-auto">
-            <div className="sticky top-0 z-10 bg-gray-900/90 backdrop-blur border-b border-gray-800 px-4 py-1 text-xs uppercase tracking-wide text-gray-400">
-              Advanced — edits sync live to the Simple pane
-            </div>
-            <AdvancedJob
-              jobConfig={jobConfig}
-              setJobConfig={setJobConfig}
-              status={status}
-              handleSubmit={handleSubmit}
-              runId={runId}
-              gpuIDs={gpuIDs}
-              setGpuIDs={setGpuIDs}
-              gpuList={gpuList}
-              datasetOptions={datasetOptions}
-              settings={settings}
+          }
+          rightPane={
+            <AdvancedConfigEditor
+              config={jobConfig}
+              setConfig={setJobConfigFromAdvanced}
+              transformOnParse={(parsed: any) => {
+                try {
+                  parsed.config.process[0].sqlite_db_path = './aitk_db.db';
+                  parsed.config.process[0].training_folder = settings.TRAINING_FOLDER;
+                  parsed.config.process[0].device = 'cuda';
+                  parsed.config.process[0].performance_log_every = 10;
+                } catch (e) {
+                  console.warn(e);
+                }
+                return migrateJobConfig(parsed);
+              }}
             />
-          </div>
-        </div>
+          }
+        />
       ) : showAdvancedView ? (
         <div className="pt-[48px] absolute top-0 left-0 w-full h-full overflow-auto">
           <AdvancedConfigEditor
@@ -378,11 +458,24 @@ export default function TrainingForm() {
       ) : (
         <MainContent>
           <ErrorBoundary
-            fallback={
-              <div className="flex items-center justify-center h-64 text-lg text-red-600 font-medium bg-red-100 dark:bg-red-900/20 dark:text-red-400 border border-red-300 dark:border-red-700 rounded-lg">
-                Advanced job detected. Please switch to advanced view to continue.
+            fallback={err => (
+              <div className="bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 rounded-lg p-4 my-4">
+                <div className="font-medium mb-1">The Simple form couldn't render this job.</div>
+                <div className="text-sm mb-2">
+                  Either the config has fields the Simple form doesn't support, or there's a bug.
+                  Switch to <span className="font-semibold">Advanced</span> view to inspect / edit the raw config.
+                </div>
+                {err?.message && (
+                  <details className="text-xs mt-2">
+                    <summary className="cursor-pointer">Show error details</summary>
+                    <pre className="mt-2 p-2 bg-black/30 rounded overflow-auto max-h-40 whitespace-pre-wrap">
+                      {err.message}
+                      {err.stack ? `\n\n${err.stack}` : ''}
+                    </pre>
+                  </details>
+                )}
               </div>
-            }
+            )}
           >
             <SimpleJob
               jobConfig={jobConfig}
@@ -401,6 +494,15 @@ export default function TrainingForm() {
           <div className="pt-20"></div>
         </MainContent>
       )}
+      <SaveAsPresetModal
+        open={savePresetOpen}
+        onClose={() => setSavePresetOpen(false)}
+        jobConfig={jobConfig}
+        archName={jobConfig.config.process[0].model.arch}
+        archLabel={
+          modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch)?.label
+        }
+      />
     </>
   );
 }

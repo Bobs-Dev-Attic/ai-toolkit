@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiClient } from '@/utils/api';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import Link from 'next/link';
@@ -11,6 +11,11 @@ interface Props {
   statsLoading: boolean;
   pageSize?: number;
 }
+
+const THUMB_PX = 56;
+const THUMB_GAP_PX = 4;
+// Approx reserved width for the two chevrons + the counter on the right.
+const CHROME_PX = 80 + 70;
 
 interface CacheEntry {
   loading: boolean;
@@ -25,10 +30,28 @@ export default function DatasetThumbnailPager({
   datasetName,
   initialThumbs,
   statsLoading,
-  pageSize = 6,
+  pageSize,
 }: Props) {
   const [page, setPage] = useState(0);
   const [, setTick] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  useEffect(() => {
+    if (!wrapperRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      for (const e of entries) setContainerWidth(e.contentRect.width);
+    });
+    ro.observe(wrapperRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const dynamicSize = (() => {
+    if (pageSize) return pageSize;
+    const usable = Math.max(0, containerWidth - CHROME_PX);
+    const fit = Math.floor((usable + THUMB_GAP_PX) / (THUMB_PX + THUMB_GAP_PX));
+    return Math.max(3, Math.min(40, fit));
+  })();
 
   const entry: CacheEntry = cache[datasetName] || {
     loading: false,
@@ -66,9 +89,10 @@ export default function DatasetThumbnailPager({
   };
 
   const totalKnown = entry.paths.length;
-  const totalPages = Math.max(1, Math.ceil(totalKnown / pageSize));
-  const startIdx = page * pageSize;
-  const visible = entry.paths.slice(startIdx, startIdx + pageSize);
+  const effectiveSize = dynamicSize;
+  const totalPages = Math.max(1, Math.ceil(totalKnown / effectiveSize));
+  const startIdx = Math.min(page * effectiveSize, Math.max(0, totalKnown - effectiveSize));
+  const visible = entry.paths.slice(startIdx, startIdx + effectiveSize);
 
   const goLeft = () => {
     if (page > 0) {
@@ -83,7 +107,7 @@ export default function DatasetThumbnailPager({
       await fetchAll();
     }
     setPage(p => {
-      const newTotal = Math.max(1, Math.ceil(entry.paths.length / pageSize));
+      const newTotal = Math.max(1, Math.ceil(entry.paths.length / effectiveSize));
       return Math.min(p + 1, newTotal - 1);
     });
   };
@@ -101,29 +125,37 @@ export default function DatasetThumbnailPager({
   const hasMore = !entry.loaded;
 
   return (
-    <div className="flex items-center gap-2 py-1">
+    <div ref={wrapperRef} className="flex items-center gap-2 py-1 w-full">
       <button
         type="button"
         onClick={goLeft}
         disabled={!canGoLeft}
-        className="text-gray-400 hover:text-white disabled:opacity-20 disabled:cursor-not-allowed"
+        className="text-gray-400 hover:text-white disabled:opacity-20 disabled:cursor-not-allowed flex-shrink-0"
         title="Previous page"
       >
         <ChevronLeft className="w-5 h-5" />
       </button>
 
-      <Link href={`/datasets/${datasetName}`} className="flex flex-wrap gap-1 flex-1">
+      <Link
+        href={`/datasets/${datasetName}`}
+        className="flex flex-wrap gap-1 flex-1 min-w-0"
+        style={{ gap: `${THUMB_GAP_PX}px` }}
+      >
         {visible.map(p => (
           <img
             key={p}
             src={`/api/img/${encodeURIComponent(p)}`}
             alt=""
             loading="lazy"
-            className="h-14 w-14 object-cover rounded border border-gray-800 flex-shrink-0"
+            style={{ height: THUMB_PX, width: THUMB_PX }}
+            className="object-cover rounded border border-gray-800 flex-shrink-0"
           />
         ))}
         {entry.loading && (
-          <span className="h-14 w-14 flex items-center justify-center text-gray-400">
+          <span
+            style={{ height: THUMB_PX, width: THUMB_PX }}
+            className="flex items-center justify-center text-gray-400 flex-shrink-0"
+          >
             <Loader2 className="w-5 h-5 animate-spin" />
           </span>
         )}
@@ -139,12 +171,12 @@ export default function DatasetThumbnailPager({
         <ChevronRight className="w-5 h-5" />
       </button>
 
-      <div className="text-[11px] text-gray-500 tabular-nums whitespace-nowrap min-w-[64px] text-right">
+      <div className="text-[11px] text-gray-500 tabular-nums whitespace-nowrap min-w-[64px] text-right flex-shrink-0">
         {entry.loading ? (
           'loading…'
         ) : (
           <>
-            {startIdx + 1}–{Math.min(startIdx + pageSize, totalKnown)} / {totalKnown}
+            {startIdx + 1}–{Math.min(startIdx + effectiveSize, totalKnown)} / {totalKnown}
             {hasMore && '+'}
           </>
         )}

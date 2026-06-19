@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import PromptLibraryModal from '@/components/PromptLibraryModal';
 import { BookText } from 'lucide-react';
+import PresetPicker from './PresetPicker';
 import {
   modelArchs,
   ModelArch,
@@ -63,6 +64,24 @@ export default function SimpleJob({
   isLoading,
 }: Props) {
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+
+  // Pick the GPU matching the active gpuIDs (falls back to the first listed).
+  const selectedGpu = useMemo(() => {
+    if (!Array.isArray(gpuList) || gpuList.length === 0) return null;
+    const wanted = gpuIDs ?? `${gpuList[0]?.index ?? 0}`;
+    return gpuList.find((g: any) => `${g?.index}` === wanted) ?? gpuList[0];
+  }, [gpuList, gpuIDs]);
+
+  const detectedVramGB = useMemo(() => {
+    const raw =
+      selectedGpu?.memoryTotalGB ??
+      selectedGpu?.memory_total_gb ??
+      (selectedGpu?.memoryTotal ? selectedGpu.memoryTotal / 1024 / 1024 / 1024 : undefined) ??
+      (selectedGpu?.memory_total ? selectedGpu.memory_total / 1024 / 1024 / 1024 : undefined);
+    if (!raw || !Number.isFinite(raw)) return 0;
+    return Math.round(raw);
+  }, [selectedGpu]);
+
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
   }, [jobConfig.config.process[0].model.arch]);
@@ -238,6 +257,15 @@ export default function SimpleJob({
             </div>
           </div>
         )}
+
+        <PresetPicker
+          archName={jobConfig.config.process[0].model.arch}
+          detectedVramGB={detectedVramGB}
+          gpuName={selectedGpu?.name}
+          jobConfig={jobConfig}
+          setJobConfig={setJobConfig}
+        />
+
         <div className={topBarClass}>
           <Card title="Job">
             <TextInput

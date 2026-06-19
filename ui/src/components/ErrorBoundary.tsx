@@ -5,35 +5,41 @@ import React, { ReactNode, ErrorInfo, Component } from 'react';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
-  fallback?: ReactNode;
+  /**
+   * Fallback UI when a child throws. Pass a function to receive the actual
+   * error so the fallback can render its message — otherwise pass a static
+   * ReactNode.
+   */
+  fallback?: ReactNode | ((error: Error | null) => ReactNode);
 }
 
 interface ErrorBoundaryState {
   hasError: boolean;
+  error: Error | null;
 }
 
 class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, error: null };
   }
 
-  static getDerivedStateFromError(_: Error): ErrorBoundaryState {
-    // Update state so the next render will show the fallback UI
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    // You can log the error to an error reporting service
-    console.error("Error caught by ErrorBoundary:", error, errorInfo);
+    console.error('Error caught by ErrorBoundary:', error, errorInfo);
   }
 
   render(): ReactNode {
     if (this.state.hasError) {
-      // You can render any custom fallback UI
-      return this.props.fallback || <div>Something went wrong.</div>;
+      const fallback = this.props.fallback;
+      if (typeof fallback === 'function') {
+        return fallback(this.state.error);
+      }
+      return fallback || <div>Something went wrong.</div>;
     }
-
     return this.props.children;
   }
 }

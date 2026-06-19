@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { TextInput } from '@/components/formInputs';
 import useDatasetList from '@/hooks/useDatasetList';
 import { Button } from '@headlessui/react';
-import { MoreVertical, Pencil, Copy, Trash2, Image as ImageIcon } from 'lucide-react';
+import { MoreVertical, Pencil, Copy, Trash2, Image as ImageIcon, ArrowUp, ArrowDown, ArrowUpDown, Folder, Check } from 'lucide-react';
+import useSettings from '@/hooks/useSettings';
 import { openConfirm } from '@/components/ConfirmModal';
 import { TopBar, MainContent } from '@/components/layout';
 import UniversalTable, { TableColumn } from '@/components/UniversalTable';
@@ -47,6 +48,63 @@ export default function Datasets() {
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [showThumbs, setShowThumbs] = useState(false);
+  const [sortKey, setSortKey] = useState<'name' | 'image_count' | 'total_size'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const { settings, setSettings, isSettingsLoaded } = useSettings();
+  const [folderInput, setFolderInput] = useState('');
+  const [folderSaving, setFolderSaving] = useState(false);
+  const [folderSaved, setFolderSaved] = useState(false);
+
+  useEffect(() => {
+    if (isSettingsLoaded) setFolderInput(settings.DATASETS_FOLDER || '');
+  }, [isSettingsLoaded, settings.DATASETS_FOLDER]);
+
+  const saveFolder = async () => {
+    const trimmed = folderInput.trim();
+    if (!trimmed || trimmed === settings.DATASETS_FOLDER) return;
+    setFolderSaving(true);
+    try {
+      const next = { ...settings, DATASETS_FOLDER: trimmed };
+      await apiClient.post('/api/settings', next);
+      setSettings(next);
+      setFolderSaved(true);
+      setTimeout(() => setFolderSaved(false), 1500);
+      refreshAll();
+    } catch (err: any) {
+      alert(err?.response?.data?.error || 'Failed to update datasets folder.');
+    } finally {
+      setFolderSaving(false);
+    }
+  };
+
+  const toggleSort = (key: 'name' | 'image_count' | 'total_size') => {
+    if (sortKey === key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'name' ? 'asc' : 'desc');
+    }
+  };
+
+  const sortIcon = (key: 'name' | 'image_count' | 'total_size') => {
+    if (sortKey !== key) return <ArrowUpDown className="w-3 h-3 inline ml-1 opacity-40" />;
+    return sortDir === 'asc' ? (
+      <ArrowUp className="w-3 h-3 inline ml-1 text-blue-300" />
+    ) : (
+      <ArrowDown className="w-3 h-3 inline ml-1 text-blue-300" />
+    );
+  };
+
+  const sortableTitle = (label: string, key: 'name' | 'image_count' | 'total_size') => (
+    <button
+      type="button"
+      onClick={() => toggleSort(key)}
+      className="inline-flex items-center hover:text-white"
+    >
+      {label}
+      {sortIcon(key)}
+    </button>
+  );
 
   useEffect(() => {
     try {
@@ -100,16 +158,26 @@ export default function Datasets() {
     refreshStats();
   };
 
-  const tableRows = useMemo(
-    () =>
-      datasets.map(dataset => ({
-        name: dataset,
-        image_count: stats[dataset]?.image_count,
-        total_size: stats[dataset]?.total_size,
-        thumbs: stats[dataset]?.thumbs || [],
-      })),
-    [datasets, stats],
-  );
+  const tableRows = useMemo(() => {
+    const rows = datasets.map(dataset => ({
+      name: dataset,
+      image_count: stats[dataset]?.image_count,
+      total_size: stats[dataset]?.total_size,
+      thumbs: stats[dataset]?.thumbs || [],
+    }));
+    const dir = sortDir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      if (sortKey === 'name') return a.name.localeCompare(b.name) * dir;
+      const av = (a as any)[sortKey];
+      const bv = (b as any)[sortKey];
+      // Treat undefined as "smallest" so unloaded rows cluster predictably.
+      if (av === undefined && bv === undefined) return 0;
+      if (av === undefined) return 1;
+      if (bv === undefined) return -1;
+      return (av - bv) * dir;
+    });
+    return rows;
+  }, [datasets, stats, sortKey, sortDir]);
 
   const handleDeleteDataset = (datasetName: string) => {
     setMenuOpenFor(null);
@@ -190,9 +258,9 @@ export default function Datasets() {
 
   const columns: TableColumn[] = [
     {
-      title: 'Dataset Name',
+      title: sortableTitle('Dataset Name', 'name'),
       key: 'name',
-      className: showThumbs ? 'w-56 align-top' : undefined,
+      className: showThumbs ? 'w-40 lg:w-48 align-top' : undefined,
       render: row => (
         <Link href={`/datasets/${row.name}`} className="text-gray-200 hover:text-gray-100">
           {row.name}
@@ -201,7 +269,7 @@ export default function Datasets() {
     },
     ...(showThumbs ? [thumbColumn] : []),
     {
-      title: 'Images',
+      title: <div className="text-right">{sortableTitle('Images', 'image_count')}</div>,
       key: 'image_count',
       className: 'w-28 text-right',
       render: row =>
@@ -212,7 +280,7 @@ export default function Datasets() {
         ),
     },
     {
-      title: 'Total Size',
+      title: <div className="text-right">{sortableTitle('Total Size', 'total_size')}</div>,
       key: 'total_size',
       className: 'w-32 text-right',
       render: row =>
@@ -324,6 +392,38 @@ export default function Datasets() {
             <ImageIcon className="w-4 h-4" />
             {showThumbs ? 'Hide Thumbnails' : 'Show Thumbnails'}
           </Button>
+          <div className="hidden md:flex items-center bg-gray-800 rounded-md overflow-hidden border border-gray-700 focus-within:border-blue-500">
+            <Folder className="w-4 h-4 text-gray-400 ml-2" />
+            <input
+              type="text"
+              value={folderInput}
+              onChange={e => setFolderInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  saveFolder();
+                }
+              }}
+              placeholder={isSettingsLoaded ? settings.DATASETS_FOLDER || '' : 'loading...'}
+              title="Absolute path on this machine. Press Enter or click ✓ to switch."
+              className="bg-transparent px-2 py-1 text-xs text-gray-200 w-64 lg:w-96 focus:outline-none"
+              spellCheck={false}
+            />
+            {folderInput.trim() && folderInput.trim() !== settings.DATASETS_FOLDER && (
+              <button
+                type="button"
+                onClick={saveFolder}
+                disabled={folderSaving}
+                title="Save and refresh"
+                className="px-2 py-1 text-blue-300 hover:bg-gray-700 disabled:opacity-40"
+              >
+                <Check className="w-4 h-4" />
+              </button>
+            )}
+            {folderSaved && (
+              <span className="px-2 text-xs text-green-400">saved</span>
+            )}
+          </div>
           <Button
             className="text-white bg-slate-600 px-2 sm:px-3 py-1 rounded-md hover:bg-slate-500 transition-colors text-sm sm:text-base whitespace-nowrap"
             onClick={() => openNewDatasetModal()}
