@@ -61,6 +61,7 @@ from toolkit.config_modules import SaveConfig, LoggingConfig, SampleConfig, Netw
     GenerateImageConfig, EmbeddingConfig, DatasetConfig, preprocess_dataset_raw_config, AdapterConfig, GuidanceConfig, validate_configs, \
     DecoratorConfig
 from toolkit.logging_aitk import create_logger
+from toolkit.system_stats_logger import create_system_stats_logger
 from diffusers import FluxTransformer2DModel
 from toolkit.accelerator import get_accelerator, unwrap_model
 from toolkit.print import print_acc
@@ -124,6 +125,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
             self.first_sample_config = self.sample_config
         self.logging_config = LoggingConfig(**self.get_conf('logging', {}))
         self.logger = create_logger(self.logging_config, config, self.save_root)
+        # samples VRAM/RAM/CPU/disk usage to system_stats.jsonl during training
+        self.system_stats_logger = None
         self.optimizer: torch.optim.Optimizer = None
         self.lr_scheduler = None
         self.data_loader: Union[DataLoader, None] = None
@@ -714,6 +717,16 @@ class BaseSDTrainProcess(BaseTrainProcess):
     def hook_before_train_loop(self):
         if self.accelerator.is_main_process:
             self.logger.start()
+            try:
+                self.system_stats_logger = create_system_stats_logger(
+                    save_root=self.save_root,
+                    device=self.device_torch,
+                    get_step=lambda: self.step_num,
+                )
+                self.system_stats_logger.start()
+            except Exception as e:
+                print_acc(f"Could not start system stats logger: {e}")
+                self.system_stats_logger = None
         self.prepare_accelerator()
         
     def sample_step_hook(self, img_num, total_imgs):
@@ -2600,6 +2613,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.accelerator.is_main_process:
             self.save()
             self.logger.finish()
+            if self.system_stats_logger is not None:
+                self.system_stats_logger.stop()
         self.accelerator.end_training()
 
         if self.accelerator.is_main_process:

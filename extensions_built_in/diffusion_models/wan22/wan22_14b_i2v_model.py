@@ -11,11 +11,12 @@ from diffusers import WanImageToVideoPipeline
 from torchvision.transforms import functional as TF
 
 from .wan22_14b_model import Wan2214bModel
+from toolkit.print import print_acc
 
 class Wan2214bI2VModel(Wan2214bModel):
     arch = "wan22_14b_i2v"
-    
-    
+
+
     def generate_single_image(
         self,
         pipeline: Wan22Pipeline,
@@ -25,8 +26,21 @@ class Wan2214bI2VModel(Wan2214bModel):
         generator: torch.Generator,
         extra: dict,
     ):
-        
-        # todo 
+        # Wan 2.2 I2V denoises a 16-channel latent but requires a 36-channel
+        # model input (16 latent + 20 first-frame conditioning). That
+        # conditioning can only be built from a first-frame image. Without one,
+        # the pipeline would size the noise latent at 36 channels while the model
+        # emits 16, crashing the scheduler ("tensor a (36) must match tensor b
+        # (16)"). Skip such samples instead of taking down the whole run.
+        if not gen_config.ctrl_img:
+            print_acc(
+                f"[wan22_14b_i2v] Skipping sample "
+                f"\"{gen_config.prompt}\": I2V sampling needs a first-frame image "
+                f"(set a control image on the sample), or disable sampling."
+            )
+            return None
+
+        # todo
         # reactivate progress bar since this is slooooow
         pipeline.set_progress_bar_config(disable=False)
 

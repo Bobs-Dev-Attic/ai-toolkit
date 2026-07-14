@@ -2,21 +2,23 @@
 
 import { useState, useEffect, use } from 'react';
 import { FaChevronLeft } from 'react-icons/fa';
-import { MdDashboard, MdImage, MdShowChart, MdCode, MdExtension } from 'react-icons/md';
+import { MdDashboard, MdImage, MdShowChart, MdCode, MdExtension, MdMemory } from 'react-icons/md';
 import { Button } from '@headlessui/react';
 import { TopBar, MainContent } from '@/components/layout';
 import useJob from '@/hooks/useJob';
-import SampleImages, { SampleImagesMenu } from '@/components/SampleImages';
+import SampleImages, { SampleImagesMenu, SampleSortContext, SampleSortOrder } from '@/components/SampleImages';
 import JobOverview from '@/components/JobOverview';
 import { redirect } from 'next/navigation';
 import JobActionBar from '@/components/JobActionBar';
 import JobConfigViewer from '@/components/JobConfigViewer';
 import JobLossGraph from '@/components/JobLossGraph';
+import JobSystemStats from '@/components/JobSystemStats';
 import JobPlugin from '@/components/JobPlugin';
 import { Job } from '@prisma/client';
 import { apiClient } from '@/utils/api';
+import { isSamplingEnabled } from '@/utils/jobs';
 
-type PageKey = 'overview' | 'samples' | 'config' | 'loss_log' | 'plugin';
+type PageKey = 'overview' | 'samples' | 'config' | 'loss_log' | 'system_stats' | 'plugin';
 
 interface Page {
   name: string;
@@ -54,6 +56,14 @@ const pages: Page[] = [
     jobTypes: ['train'],
   },
   {
+    name: 'System',
+    value: 'system_stats',
+    icon: MdMemory,
+    component: JobSystemStats,
+    mainCss: 'pt-24 pb-4',
+    jobTypes: ['train'],
+  },
+  {
     name: 'Config File',
     value: 'config',
     icon: MdCode,
@@ -75,6 +85,8 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
   const { job, status, refreshJob } = useJob(jobID, 5000);
   const [pageKey, setPageKey] = useState<PageKey>('overview');
   const [hasPlugin, setHasPlugin] = useState(false);
+  // Default the samples gallery to Newer -> Older. Shared with the Sort By control in the tab row.
+  const [sampleSortOrder, setSampleSortOrder] = useState<SampleSortOrder>('newest');
 
   // poll for plugin.html in the job folder; show the Plugin tab if it exists
   useEffect(() => {
@@ -93,6 +105,7 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
   const page = pages.find(p => p.value === pageKey);
 
   const jobType = job?.job_type || 'unknown';
+  const samplingEnabled = job ? isSamplingEnabled(job) : true;
 
   let title = `Job: ${job?.name || 'Loading...'}`;
   if (jobType === 'caption') {
@@ -100,7 +113,7 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
   }
 
   return (
-    <>
+    <SampleSortContext.Provider value={{ sortOrder: sampleSortOrder, setSortOrder: setSampleSortOrder }}>
       {/* Fixed top bar */}
       <TopBar>
         <div className="flex-shrink-0">
@@ -144,6 +157,10 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
           if (page.value === 'plugin' && !hasPlugin) {
             return null;
           }
+          // Hide the Samples tab for runs that won't produce samples.
+          if (page.value === 'samples' && !samplingEnabled) {
+            return null;
+          }
           return (
             <Button
               key={page.value}
@@ -162,6 +179,6 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
           </>
         )}
       </div>
-    </>
+    </SampleSortContext.Provider>
   );
 }

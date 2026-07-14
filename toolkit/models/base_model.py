@@ -41,7 +41,7 @@ from torchvision.transforms import functional as TF
 from toolkit.accelerator import get_accelerator, unwrap_model
 from typing import TYPE_CHECKING
 from toolkit.print import print_acc
-from toolkit.basic import flush
+from toolkit.basic import flush, vram_status_string
 
 if TYPE_CHECKING:
     from toolkit.lora_special import LoRASpecialNetwork
@@ -361,6 +361,11 @@ class BaseModel:
         print_acc(status)
         self._status_update(status)
 
+    def _report_vram(self, label: str):
+        # push a VRAM usage/availability notification to console + UI status
+        device = getattr(self, "device_torch", None)
+        self.print_and_status_update(vram_status_string(label, device))
+
     def add_status_update_hook(self, func):
         self._status_update_hooks.append(func)
 
@@ -662,6 +667,14 @@ class BaseModel:
                         generator,
                         extra,
                     )
+
+                    if img is None:
+                        # A model may decline to generate a sample it cannot
+                        # produce (e.g. Wan I2V without a first-frame image).
+                        # Skip saving/logging rather than crashing the run.
+                        self._after_sample_image(i, len(image_configs))
+                        flush()
+                        continue
 
                     gen_config.save_image(img, i)
                     gen_config.log_image(img, i)

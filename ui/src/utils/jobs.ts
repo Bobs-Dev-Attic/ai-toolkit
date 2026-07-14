@@ -113,3 +113,19 @@ export const getTotalSteps = (job: Job) => {
   const jobConfig = getJobConfig(job);
   return jobConfig.config.process[0].train?.steps || 0;
 };
+
+// True when the job is configured to generate sample images/videos during
+// training. Used to hide the Samples tab/controls for runs that won't produce
+// any (sampling disabled, or no prompts configured).
+export const isSamplingEnabled = (job: Job): boolean => {
+  try {
+    const process = getJobConfig(job).config.process[0];
+    if (process.train?.disable_sampling) return false;
+    const sample = process.sample;
+    if (!sample) return false;
+    const numSamples = (sample.samples?.length ?? 0) + (sample.prompts?.length ?? 0);
+    return numSamples > 0;
+  } catch {
+    return true; // if we can't tell, don't hide it
+  }
+};

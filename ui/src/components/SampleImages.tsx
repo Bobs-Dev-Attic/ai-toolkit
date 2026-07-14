@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useCallback } from 'react';
+import { useMemo, useState, useRef, useCallback, useEffect, createContext, useContext } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import useSampleImages from '@/hooks/useSampleImages';
 import SampleImageCard from './SampleImageCard';
@@ -6,11 +6,22 @@ import { Job } from '@prisma/client';
 import { JobConfig } from '@/types';
 import { LuImageOff, LuLoader, LuBan } from 'react-icons/lu';
 import { Button } from '@headlessui/react';
-import { FaDownload } from 'react-icons/fa';
+import { FaDownload, FaFolderOpen, FaSortAmountDown, FaSortAmountUp } from 'react-icons/fa';
 import { apiClient } from '@/utils/api';
 import classNames from 'classnames';
 import { FaCaretDown, FaCaretUp } from 'react-icons/fa';
 import SampleImageViewer from './SampleImageViewer';
+
+export type SampleSortOrder = 'newest' | 'oldest';
+
+interface SampleSortContextValue {
+  sortOrder: SampleSortOrder;
+  setSortOrder: React.Dispatch<React.SetStateAction<SampleSortOrder>>;
+}
+
+// Shared so the Sort By control (rendered in the page tab row via `menuItem`) and the
+// gallery (rendered in the main content area) can stay in sync.
+export const SampleSortContext = createContext<SampleSortContextValue | null>(null);
 
 interface SampleImagesMenuProps {
   job?: Job | null;
@@ -18,6 +29,23 @@ interface SampleImagesMenuProps {
 
 export const SampleImagesMenu = ({ job }: SampleImagesMenuProps) => {
   const [isZipping, setIsZipping] = useState(false);
+  const [isOpeningFolder, setIsOpeningFolder] = useState(false);
+  const sortCtx = useContext(SampleSortContext);
+  // Only offer Download / Sort once there is at least one sample to act on.
+  const { sampleImages } = useSampleImages(job?.id ?? '', 5000);
+  const hasSamples = sampleImages.length > 0;
+
+  const openSamplesFolder = async () => {
+    if (!job || isOpeningFolder) return;
+    setIsOpeningFolder(true);
+    try {
+      await apiClient.post(`/api/jobs/${job.id}/open-folder`);
+    } catch (err) {
+      console.error('Error opening samples folder:', err);
+    } finally {
+      setIsOpeningFolder(false);
+    }
+  };
 
   const downloadZip = async () => {
     if (isZipping) return;
@@ -47,22 +75,64 @@ export const SampleImagesMenu = ({ job }: SampleImagesMenuProps) => {
     }
   };
   return (
-    <Button
-      onClick={downloadZip}
-      className={classNames(
-        `flex-1 sm:flex-initial justify-center px-2 sm:px-4 py-1 h-8 hover:bg-gray-200 dark:hover:bg-gray-700 flex items-center`,
-        {
-          'opacity-50 cursor-not-allowed': isZipping,
-        },
+    <>
+      <Button
+        onClick={openSamplesFolder}
+        disabled={isOpeningFolder}
+        title="Open the samples folder in your file explorer"
+        className={classNames(
+          `flex-1 sm:flex-initial justify-center px-2 sm:px-4 py-1 h-8 hover:bg-gray-200 dark:hover:bg-gray-700 flex items-center`,
+          {
+            'opacity-50 cursor-not-allowed': isOpeningFolder,
+          },
+        )}
+      >
+        {isOpeningFolder ? (
+          <LuLoader className="animate-spin inline-block sm:mr-2" />
+        ) : (
+          <FaFolderOpen className="inline-block sm:mr-2" />
+        )}
+        <span className="hidden sm:inline">Open Folder</span>
+      </Button>
+
+      {hasSamples && sortCtx && (
+        <label className="flex items-center gap-2 px-2 sm:px-4 h-8 text-sm">
+          {sortCtx.sortOrder === 'newest' ? (
+            <FaSortAmountDown className="text-gray-400" />
+          ) : (
+            <FaSortAmountUp className="text-gray-400" />
+          )}
+          <span className="hidden sm:inline">Sort by</span>
+          <select
+            value={sortCtx.sortOrder}
+            onChange={e => sortCtx.setSortOrder(e.target.value as SampleSortOrder)}
+            className="h-6 rounded border border-gray-600 bg-gray-700 text-gray-100 px-1 text-sm focus:outline-none"
+          >
+            <option value="newest">Created: Newer to Older</option>
+            <option value="oldest">Created: Older to Newer</option>
+          </select>
+        </label>
       )}
-    >
-      {isZipping ? (
-        <LuLoader className="animate-spin inline-block sm:mr-2" />
-      ) : (
-        <FaDownload className="inline-block sm:mr-2" />
+
+      {hasSamples && (
+        <Button
+          onClick={downloadZip}
+          className={classNames(
+            `flex-1 sm:flex-initial justify-center px-2 sm:px-4 py-1 h-8 hover:bg-gray-200 dark:hover:bg-gray-700 flex items-center`,
+            {
+              'opacity-50 cursor-not-allowed': isZipping,
+            },
+          )}
+        >
+          {isZipping ? (
+            <LuLoader className="animate-spin inline-block sm:mr-2" />
+          ) : (
+            <FaDownload className="inline-block sm:mr-2" />
+          )}
+          <span className="hidden sm:inline">{isZipping ? 'Preparing' : 'Download'}</span>
+        </Button>
       )}
-      <span className="hidden sm:inline">{isZipping ? 'Preparing' : 'Download'}</span>
-    </Button>
+    </>
   );
 };
 
@@ -76,6 +146,10 @@ export default function SampleImages({ job }: SampleImagesProps) {
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const scrollParentCallback = useCallback((el: HTMLDivElement | null) => setScrollParent(el), []);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Sort order is controlled from the Sort By dropdown in the page tab row (see SampleImagesMenu).
+  const sortCtx = useContext(SampleSortContext);
+  const sortOrder = sortCtx?.sortOrder ?? 'newest';
+
   const numSamples = useMemo(() => {
     if (job?.job_config) {
       const jobConfig = JSON.parse(job.job_config) as JobConfig;
@@ -88,6 +162,8 @@ export default function SampleImages({ job }: SampleImagesProps) {
   }, [job]);
 
   // Group samples into rows of `numSamples` for the virtualized list — one row per sample iteration.
+  // The underlying list is chronological (filenames are timestamp-prefixed), so grouping first
+  // keeps each iteration's images together in prompt order.
   const rows = useMemo(() => {
     const out: string[][] = [];
     for (let i = 0; i < sampleImages.length; i += numSamples) {
@@ -95,6 +171,23 @@ export default function SampleImages({ job }: SampleImagesProps) {
     }
     return out;
   }, [sampleImages, numSamples]);
+
+  // For "Newer to Older" we reverse the iteration order while preserving the
+  // left-to-right prompt order within each row.
+  const displayRows = useMemo(
+    () => (sortOrder === 'newest' ? [...rows].reverse() : rows),
+    [rows, sortOrder],
+  );
+
+  // When the sort order flips, jump to the end that holds the newest samples.
+  useEffect(() => {
+    if (displayRows.length === 0) return;
+    if (sortOrder === 'newest') {
+      virtuosoRef.current?.scrollToIndex({ index: 0, align: 'start' });
+    } else {
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' });
+    }
+  }, [sortOrder]);
 
   const scrollToBottom = () => {
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' });
@@ -258,17 +351,17 @@ export default function SampleImages({ job }: SampleImagesProps) {
     <div ref={scrollParentCallback} className="absolute top-[80px] left-0 right-0 bottom-0 overflow-y-auto">
       <div className="pb-4">
         {PageInfoContent}
-        {sampleImages && rows.length > 0 && scrollParent && (
+        {sampleImages && displayRows.length > 0 && scrollParent && (
           <Virtuoso
             ref={virtuosoRef}
             customScrollParent={scrollParent}
-            totalCount={rows.length}
-            initialTopMostItemIndex={rows.length - 1}
-            followOutput="auto"
+            totalCount={displayRows.length}
+            initialTopMostItemIndex={sortOrder === 'newest' ? 0 : displayRows.length - 1}
+            followOutput={sortOrder === 'newest' ? false : 'auto'}
             increaseViewportBy={400}
-            computeItemKey={index => rows[index]?.[0] ?? index}
+            computeItemKey={index => displayRows[index]?.[0] ?? index}
             itemContent={index => {
-              const row = rows[index];
+              const row = displayRows[index];
               if (!row) return null;
 
               // Only pad the final row when numSamples < MIN_COLS and the row is short.

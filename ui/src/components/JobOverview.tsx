@@ -4,13 +4,36 @@ import useCPUInfo from '@/hooks/useCPUInfo';
 import GPUWidget from '@/components/GPUWidget';
 import CPUWidget from '@/components/CPUWidget';
 import FilesWidget from '@/components/FilesWidget';
+import JobLogPanel from '@/components/JobLogPanel';
 import { getTotalSteps } from '@/utils/jobs';
 import { Cpu, HardDrive, Info, Gauge } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import useJobLog from '@/hooks/useJobLog';
+import { useMemo } from 'react';
 
 interface JobOverviewProps {
   job: Job;
+}
+
+// speed_string is written as "X.XX iter/sec" or "X.XX sec/iter" (see
+// DiffusionTrainer.handle_timing_print_hook). Parse it back to seconds/iter.
+function parseSecPerIter(speedString: string): number | null {
+  if (!speedString) return null;
+  const m = speedString.match(/([\d.]+)\s*(iter\/sec|sec\/iter)/);
+  if (!m) return null;
+  const val = parseFloat(m[1]);
+  if (!Number.isFinite(val) || val <= 0) return null;
+  return m[2] === 'iter/sec' ? 1 / val : val;
+}
+
+// Compact duration like "1h 04m 12s" / "3m 20s" / "45s".
+function formatDuration(totalSec: number): string {
+  if (!Number.isFinite(totalSec) || totalSec < 0) return '—';
+  const s = Math.floor(totalSec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(ss).padStart(2, '0')}s`;
+  if (m > 0) return `${m}m ${String(ss).padStart(2, '0')}s`;
+  return `${ss}s`;
 }
 
 export default function JobOverview({ job }: JobOverviewProps) {
@@ -20,50 +43,23 @@ export default function JobOverview({ job }: JobOverviewProps) {
     }
     return job.gpu_ids.split(',').map(id => parseInt(id));
   }, [job.gpu_ids]);
-  const { log, setLog, status: statusLog, refresh: refreshLog } = useJobLog(job.id, 2000);
-  const logRef = useRef<HTMLDivElement>(null);
-  // Track whether we should auto-scroll to bottom
-  const [isScrolledToBottom, setIsScrolledToBottom] = useState(true);
-  console.log('job.gpu_ids', job.gpu_ids);
   const { gpuList, isGPUInfoLoaded } = useGPUInfo(gpuIds, 5000);
   const { cpuInfo, isCPUInfoLoaded } = useCPUInfo(5000);
   const totalSteps = getTotalSteps(job);
   const progress = (job.step / totalSteps) * 100;
   const isStopping = job.stop && job.status === 'running';
 
-  const logLines: string[] = useMemo(() => {
-    // split at line breaks on \n or \r\n but not \r
-    let splits: string[] = log.split(/\n|\r\n/);
-
-    splits = splits.map(line => {
-      return line.split(/\r/).pop();
-    }) as string[];
-
-    // only return last 100 lines max
-    const maxLines = 1000;
-    if (splits.length > maxLines) {
-      splits = splits.slice(splits.length - maxLines);
-    }
-
-    return splits;
-  }, [log]);
-
-  // Handle scroll events to determine if user has scrolled away from bottom
-  const handleScroll = () => {
-    if (logRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = logRef.current;
-      // Consider "at bottom" if within 10 pixels of the bottom
-      const isAtBottom = scrollHeight - scrollTop - clientHeight < 10;
-      setIsScrolledToBottom(isAtBottom);
-    }
-  };
-
-  // Auto-scroll to bottom only if we were already at the bottom
-  useEffect(() => {
-    if (logRef.current && isScrolledToBottom) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [log, isScrolledToBottom]);
+  // Elapsed / ETA estimated from the current iteration speed (no persisted start
+  // time exists). Both are approximate and assume steady speed.
+  const timing = useMemo(() => {
+    const secPerIter = parseSecPerIter(job.speed_string);
+    if (secPerIter == null || totalSteps <= 0) return null;
+    const remaining = Math.max(0, totalSteps - job.step);
+    return {
+      elapsed: job.step * secPerIter,
+      eta: remaining * secPerIter,
+    };
+  }, [job.speed_string, job.step, totalSteps]);
 
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {
@@ -104,10 +100,19 @@ export default function JobOverview({ job }: JobOverviewProps) {
           {/* Progress Bar */}
           {totalSteps > 0 && (
             <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-400">Progress</span>
+              <div className="flex items-center justify-between text-sm gap-3 flex-wrap">
+                <div className="flex items-center gap-3">
+                  <span className="text-gray-400">Progress</span>
+                  {timing && (
+                    <span className="text-xs text-gray-500 tabular-nums" title="Estimated from current speed">
+                      Elapsed ~{formatDuration(timing.elapsed)}
+                      <span className="mx-1 text-gray-700">•</span>
+                      ETA ~{formatDuration(timing.eta)}
+                    </span>
+                  )}
+                </div>
                 <span className="text-gray-200">
-                  Step {job.step} of {totalSteps}
+                  Step {job.step} of {totalSteps} ({progress.toFixed(1)}%)
                 </span>
               </div>
               <div className="w-full bg-gray-800 rounded-full h-2">
@@ -143,24 +148,8 @@ export default function JobOverview({ job }: JobOverviewProps) {
             </div>
           </div>
 
-          {/* Log - Now using flex-grow to fill remaining space */}
-          <div className="bg-gray-950 rounded-lg p-4 relative flex-grow min-h-60">
-            <div
-              ref={logRef}
-              className="text-xs text-gray-300 absolute inset-0 p-4 overflow-y-auto"
-              onScroll={handleScroll}
-            >
-              {statusLog === 'loading' && 'Loading log...'}
-              {statusLog === 'error' && 'Error loading log'}
-              {['success', 'refreshing'].includes(statusLog) && (
-                <div>
-                  {logLines.map((line, index) => {
-                    return <pre key={index}>{line}</pre>;
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
+          {/* Log panel: raw / table views, copy, verbose, filter, export */}
+          <JobLogPanel jobID={job.id} />
         </div>
       </div>
 

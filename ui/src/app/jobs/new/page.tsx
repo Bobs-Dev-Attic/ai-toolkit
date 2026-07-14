@@ -17,6 +17,7 @@ import { TopBar, MainContent } from '@/components/layout';
 import { Button, Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { ChevronDown, Save } from 'lucide-react';
 import SaveAsPresetModal from './SaveAsPresetModal';
+import PreflightModal from '@/components/PreflightModal';
 import { FaChevronLeft } from 'react-icons/fa';
 import SimpleJob from './SimpleJob';
 import AdvancedConfigEditor from '@/components/AdvancedConfigEditor';
@@ -223,9 +224,24 @@ export default function TrainingForm() {
       );
   };
 
+  const [preflightOpen, setPreflightOpen] = useState(false);
+
+  // Whether this config is a trainable job worth pre-flighting (has model + train).
+  const isTrainingJob = !!jobConfig?.config?.process?.[0]?.train && !!jobConfig?.config?.process?.[0]?.model;
+
+  // Create flow: for training jobs, show the pre-flight check first; otherwise save directly.
+  const requestCreate = () => {
+    if (status === 'saving') return;
+    if (isTrainingJob) {
+      setPreflightOpen(true);
+    } else {
+      saveJob(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    saveJob(false);
+    requestCreate();
   };
 
   return (
@@ -366,7 +382,7 @@ export default function TrainingForm() {
         <div className="flex-shrink-0">
           <Button
             className="text-white bg-green-600 hover:bg-green-700 px-2 sm:px-3 py-1 rounded-md text-xs sm:text-base"
-            onClick={() => saveJob()}
+            onClick={requestCreate}
             disabled={status === 'saving'}
           >
             {status === 'saving' ? (
@@ -502,6 +518,15 @@ export default function TrainingForm() {
         archLabel={
           modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch)?.label
         }
+      />
+      <PreflightModal
+        open={preflightOpen}
+        jobConfig={jobConfig}
+        onConfirm={() => {
+          setPreflightOpen(false);
+          saveJob(false);
+        }}
+        onCancel={() => setPreflightOpen(false)}
       />
     </>
   );
