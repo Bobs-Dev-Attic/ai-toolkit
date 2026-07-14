@@ -35,3 +35,17 @@ export const getHFToken = async () => {
   }
   return token;
 };
+
+// User-configured HuggingFace hub cache location (empty = default). Injected as
+// HF_HUB_CACHE into the training subprocess so downloads land on the chosen drive.
+export const getHfHubCache = async () => {
+  let row = await prisma.settings.findFirst({
+    where: {
+      key: 'HF_HUB_CACHE',
+    },
+  });
+  if (row?.value && row.value.trim() !== '') {
+    return row.value.trim();
+  }
+  return '';
+};

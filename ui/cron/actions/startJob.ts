@@ -3,7 +3,7 @@ import { Job } from '@prisma/client';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { TOOLKIT_ROOT, getTrainingFolder, getHFToken } from '../paths';
+import { TOOLKIT_ROOT, getTrainingFolder, getHFToken, getHfHubCache } from '../paths';
 import { resolvePythonPath } from '../pythonPath';
 const isWindows = process.platform === 'win32';
 
@@ -79,6 +79,18 @@ const startAndWatchJob = (job: Job) => {
     const hfToken = await getHFToken();
     if (hfToken && hfToken.trim() !== '') {
       additionalEnv.HF_TOKEN = hfToken;
+    }
+
+    // HF_HUB_CACHE — relocate model downloads to the user's chosen drive. Must be
+    // set before Python imports huggingface_hub, which spawning here guarantees.
+    const hfHubCache = await getHfHubCache();
+    if (hfHubCache) {
+      additionalEnv.HF_HUB_CACHE = hfHubCache;
+      try {
+        fs.mkdirSync(hfHubCache, { recursive: true });
+      } catch (e) {
+        console.error('Could not create HF cache folder:', e);
+      }
     }
 
     // Add the --log argument to the command

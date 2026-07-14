@@ -7,13 +7,21 @@ export interface Settings {
   HF_TOKEN: string;
   TRAINING_FOLDER: string;
   DATASETS_FOLDER: string;
+  MODELS_FOLDER: string;
+  /** JSON-encoded array of modelArch names. Empty string = all enabled. */
+  ENABLED_MODEL_ARCHS: string;
+  /** Override for the HuggingFace hub cache dir. Empty = default location. */
+  HF_HUB_CACHE: string;
 }
 
 export default function useSettings() {
-  const [settings, setSettings] = useState({
+  const [settings, setSettings] = useState<Settings>({
     HF_TOKEN: '',
     TRAINING_FOLDER: '',
     DATASETS_FOLDER: '',
+    MODELS_FOLDER: '',
+    ENABLED_MODEL_ARCHS: '',
+    HF_HUB_CACHE: '',
   });
   const [isSettingsLoaded, setIsLoaded] = useState(false);
   useEffect(() => {
@@ -26,6 +34,9 @@ export default function useSettings() {
           HF_TOKEN: data.HF_TOKEN || '',
           TRAINING_FOLDER: data.TRAINING_FOLDER || '',
           DATASETS_FOLDER: data.DATASETS_FOLDER || '',
+          MODELS_FOLDER: data.MODELS_FOLDER || '',
+          ENABLED_MODEL_ARCHS: data.ENABLED_MODEL_ARCHS || '',
+          HF_HUB_CACHE: data.HF_HUB_CACHE || '',
         });
         setIsLoaded(true);
       })
