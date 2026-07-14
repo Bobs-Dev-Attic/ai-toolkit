@@ -4,11 +4,13 @@ import {
   resolveDatasetFolder,
   spawnImageOpStream,
 } from '@/server/imageOps';
+import { applyHfCacheEnv } from '@/server/hfCache';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
+  await applyHfCacheEnv();
   let body: any;
   try {
     body = await request.json();

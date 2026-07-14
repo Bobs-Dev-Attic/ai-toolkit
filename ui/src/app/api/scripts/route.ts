@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { TOOLKIT_ROOT } from '@/paths';
 import { resolvePythonPath } from '../../../../cron/pythonPath';
+import { applyHfCacheEnv } from '@/server/hfCache';
 
 // Long-running scripts: allow up to 20 minutes.
 export const runtime = 'nodejs';
@@ -218,6 +219,7 @@ const runStreaming = (scriptPath: string, args: string[]): Response => {
 };
 
 export async function POST(request: Request) {
+  await applyHfCacheEnv();
   let body: any;
   try {
     body = await request.json();

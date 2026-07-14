@@ -4,6 +4,7 @@ import {
   resolveDatasetFolder,
   spawnImageOpStream,
 } from '@/server/imageOps';
+import { applyHfCacheEnv } from '@/server/hfCache';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -12,6 +13,7 @@ const ALLOWED_TARGETS = new Set(['face', 'upper_body', 'torso', 'person']);
 const ALLOWED_TORSO_TIGHTNESS = new Set(['tight', 'medium', 'wide']);
 
 export async function POST(request: Request) {
+  await applyHfCacheEnv();
   let body: any;
   try {
     body = await request.json();

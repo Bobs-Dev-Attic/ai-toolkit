@@ -32,6 +32,31 @@ export async function resolveEffectiveHfCache(): Promise<{ path: string; isDefau
   return { path: defaultHfCachePath(), isDefault: true };
 }
 
+// Remember whatever HF_HUB_CACHE the UI server was launched with, so that
+// clearing the setting reverts to it (or to the default) rather than sticking.
+let _launchHfCache: string | undefined;
+let _launchCaptured = false;
+
+// Apply the configured cache location to THIS process's environment. Python we
+// spawn from the UI server (captioning, upscaling, ui_scripts) inherits it via
+// `{ ...process.env }`, so those downloads land on the chosen drive too. Cheap
+// enough to call per user-triggered op; the training worker reads the DB
+// directly (see cron/actions/startJob.ts).
+export async function applyHfCacheEnv(): Promise<void> {
+  if (!_launchCaptured) {
+    _launchHfCache = process.env.HF_HUB_CACHE;
+    _launchCaptured = true;
+  }
+  const stored = await getStoredHfCache();
+  if (stored) {
+    process.env.HF_HUB_CACHE = stored;
+  } else if (_launchHfCache) {
+    process.env.HF_HUB_CACHE = _launchHfCache;
+  } else {
+    delete process.env.HF_HUB_CACHE;
+  }
+}
+
 // Normalize a folder the user picked into a proper cache path. We namespace it
 // under huggingface/hub so we don't scatter models--* dirs directly into an
 // arbitrary folder they selected (e.g. picking "D:\AI" -> "D:\AI\huggingface\hub").

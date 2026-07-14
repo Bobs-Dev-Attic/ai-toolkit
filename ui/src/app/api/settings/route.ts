@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 import { defaultTrainFolder, defaultDatasetsFolder } from '@/paths';
 import { flushCache } from '@/server/settings';
+import { applyHfCacheEnv } from '@/server/hfCache';
 
 const prisma = new PrismaClient();
 
@@ -59,6 +60,9 @@ export async function POST(request: Request) {
 
     await Promise.all(ops);
     flushCache();
+    // Reflect an HF cache change in this process's env immediately so same-session
+    // captioning / upscaling / scripts pick it up without a restart.
+    await applyHfCacheEnv();
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to update settings' }, { status: 500 });
