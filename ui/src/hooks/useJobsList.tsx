@@ -27,6 +27,8 @@ export default function useJobsList({ onlyActive = false, reloadInterval = null,
         } else {
           if (onlyActive) {
             data.jobs = data.jobs.filter((job: Job) => ['running', 'queued', 'stopping'].includes(job.status));
+          } else {
+            data.jobs = data.jobs.filter((job: Job) => job.status !== 'draft');
           }
           setJobs(data.jobs);
           setStatus('success');

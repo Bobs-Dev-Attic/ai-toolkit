@@ -30,10 +30,19 @@ const RAW: Record<string, string> = {
 
   // ───── Quantization ─────
   'quantization': 'Reduce model weight precision to fit in less VRAM. Stronger quantization saves memory but can soften fine details.',
+  'quantize compile': 'Combines the Quantization controls (which precision to load the model in) with the Compile controls (whether to run torch.compile on the model for faster steps).',
+  'transformer':
+    'Quantization precision for the diffusion transformer weights — the biggest single VRAM saving. qfloat8 is the standard balanced choice; uint3/uint4 + an Accuracy Recovery Adapter goes much smaller at the cost of some speed and quality.',
   'transformer quantization':
     'Quantize the diffusion transformer weights. The biggest single VRAM saving for most models. Pick a heavier dtype (qfloat8) when you have headroom.',
+  'text encoder':
+    'Quantization precision for the text encoder. Smaller than the transformer but still worth quantizing when memory is tight; qfloat8 is almost free in quality. Use bf16 to leave it un-quantized.',
   'text encoder quantization':
     'Quantize the text encoder weights. Smaller than the transformer but worth doing when memory is tight.',
+  'compile options':
+    'torch.compile turns the model into a fused, optimized graph at startup. The first step is slow (compilation pass), subsequent steps are noticeably faster. Disable if you hit a compile error.',
+  'compile model':
+    'Enable torch.compile on the transformer. Faster per-step training after the one-time compile, at the cost of a ~1-2 minute warmup on job start.',
   'low vram':
     'Aggressive memory-saving path: weights stream to GPU on demand. Slower per step, but lets bigger models fit.',
   'low vram mode':
@@ -51,6 +60,14 @@ const RAW: Record<string, string> = {
     'How many steps between stage switches when training a multistage model. Smaller values cycle stages more often.',
 
   // ───── Target / Network ─────
+  'target type':
+    'What kind of weights you are training. lora trains a low-rank adapter (typical); lokr/loha are alternative low-rank decompositions; full retrains the entire model (huge VRAM, rarely used).',
+  'data type':
+    'Compute precision for training. bfloat16 is the modern default (numerically stable + memory-friendly). float16 is faster on older cards but can NaN on some setups. float32 is precise but uses 2x the VRAM.',
+  'lora weight':
+    'Multiplier applied to the LoRA layers during training. 1.0 means the LoRA is fully active; lower values dampen its influence so the base model dominates more.',
+  'caption dropout rate':
+    'Probability per step that the caption is replaced with an empty string. Forces the model to learn from images alone, improving robustness and preventing the LoRA from over-relying on trigger words. 0.05–0.1 is a healthy default; 0 disables.',
   'network type':
     'lora is the standard rank-adapter. lokr / loha are alternative low-rank decompositions that can be more parameter-efficient.',
   'linear rank':
@@ -86,8 +103,16 @@ const RAW: Record<string, string> = {
     'How the learning rate changes over training. constant is robust; cosine gently decays; linear decays linearly.',
   'noise scheduler':
     'How noise is added during training. flowmatch matches modern flow-matching models; ddpm is classic diffusion.',
-  'ema': 'Exponential moving average of the network weights. Often produces smoother, slightly higher-quality saved checkpoints.',
+  'timestep bias':
+    'Skew which timesteps get sampled more often during training. Positive values bias toward higher-noise (harder, structural) timesteps; negative toward lower-noise (details). 0 = uniform.',
+  'loss type':
+    'Loss function used to compare the model output against the noise target. mse is the standard mean-squared error; huber is more robust to outliers; flow_match is required for flow-matching models like FLUX.',
+  'ema': 'Exponential moving average of the network weights. Often produces smoother, slightly higher-quality saved checkpoints. Adds a small VRAM cost (copy of the LoRA weights) but no per-step slowdown.',
+  'ema exponential moving average':
+    'Exponential moving average of the network weights. Often produces smoother, slightly higher-quality saved checkpoints. Adds a small VRAM cost (copy of the LoRA weights) but no per-step slowdown.',
+  'ema rate': 'How quickly the EMA forgets old weights. 0.99 is typical; closer to 1 = slower decay = more stable but less responsive.',
   'ema decay': 'How quickly the EMA forgets old weights. 0.99 is typical; closer to 1 = slower decay = more stable but less responsive.',
+  'use ema': 'Track an exponential moving average of the LoRA weights and save it alongside the regular checkpoint. Often produces slightly smoother results.',
   'unload text encoder':
     'Drop the text encoder from VRAM after caching text embeddings. Frees several GB but only safe when text embeddings are pre-cached.',
   'cache text embeddings':

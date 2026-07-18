@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import PromptLibraryModal from '@/components/PromptLibraryModal';
 import { BookText } from 'lucide-react';
 import PresetPicker from './PresetPicker';
+import useSettings from '@/hooks/useSettings';
 import {
   modelArchs,
   ModelArch,
@@ -26,14 +27,15 @@ import {
   CreatableSelectInput,
 } from '@/components/formInputs';
 import Card from '@/components/Card';
-import { X, Copy, Wand2, SquareDashed } from 'lucide-react';
+import { X, Copy, Wand2, SquareDashed, Settings as SettingsIcon, FolderOpen } from 'lucide-react';
+import ModelSettingsModal from '@/components/ModelSettingsModal';
+import FolderBrowserModal from '@/components/FolderBrowserModal';
 import { openUpsamplePromptsModal, toAspectRatio } from '@/components/UpsamplePromptsModal';
 import { openPromptBoxEditor } from '@/components/PromptBoxEditorModal';
 import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleImageModal';
 import SampleControlImage from '@/components/SampleControlImage';
 import { FlipHorizontal2, FlipVertical2 } from 'lucide-react';
 import { handleModelArchChange } from './utils';
-import PresetPicker from './PresetPicker';
 import { IoFlaskSharp } from 'react-icons/io5';
 import { isMac } from '@/helpers/basic';
 
@@ -65,23 +67,32 @@ export default function SimpleJob({
   isLoading,
 }: Props) {
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+  const { settings: appSettings, setSettings: setAppSettings } = useSettings();
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
 
-  // Pick the GPU matching the active gpuIDs (falls back to the first listed).
-  const selectedGpu = useMemo(() => {
-    if (!Array.isArray(gpuList) || gpuList.length === 0) return null;
-    const wanted = gpuIDs ?? `${gpuList[0]?.index ?? 0}`;
-    return gpuList.find((g: any) => `${g?.index}` === wanted) ?? gpuList[0];
-  }, [gpuList, gpuIDs]);
-
-  const detectedVramGB = useMemo(() => {
-    const raw =
-      selectedGpu?.memoryTotalGB ??
-      selectedGpu?.memory_total_gb ??
-      (selectedGpu?.memoryTotal ? selectedGpu.memoryTotal / 1024 / 1024 / 1024 : undefined) ??
-      (selectedGpu?.memory_total ? selectedGpu.memory_total / 1024 / 1024 / 1024 : undefined);
-    if (!raw || !Number.isFinite(raw)) return 0;
-    return Math.round(raw);
-  }, [selectedGpu]);
+  // Filter the architecture dropdown by the user's enabled list (set in
+  // Settings → Models). Empty list = show every architecture.
+  const filteredModelOptions = useMemo(() => {
+    let enabled: string[] = [];
+    try {
+      if (appSettings.ENABLED_MODEL_ARCHS) {
+        const parsed = JSON.parse(appSettings.ENABLED_MODEL_ARCHS);
+        if (Array.isArray(parsed)) enabled = parsed.filter((s: any) => typeof s === 'string');
+      }
+    } catch {}
+    if (enabled.length === 0) return groupedModelOptions;
+    const currentArch = jobConfig.config.process[0].model.arch;
+    const allow = new Set(enabled);
+    return groupedModelOptions
+      .map(group => ({
+        ...group,
+        // Keep the currently-selected arch so the form's value still resolves
+        // even if the user excluded it after picking it.
+        options: group.options.filter((o: any) => allow.has(o.value) || o.value === currentArch),
+      }))
+      .filter(group => group.options.length > 0);
+  }, [appSettings.ENABLED_MODEL_ARCHS, jobConfig.config.process[0].model.arch]);
 
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
@@ -289,7 +300,6 @@ export default function SimpleJob({
               docKey="config.name"
               onChange={value => setJobConfig(value, 'config.name')}
               placeholder="Enter training name"
-              disabled={runId !== null}
               required
             />
             {showGPUSelect && (
@@ -320,27 +330,49 @@ export default function SimpleJob({
 
           {/* Model Configuration Section */}
           <Card title="Model">
-            <SelectInput
-              label="Model Architecture"
-              value={jobConfig.config.process[0].model.arch}
-              onChange={value => {
-                handleModelArchChange(jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
-              }}
-              options={groupedModelOptions}
-            />
-            <TextInput
-              label="Name or Path"
-              value={jobConfig.config.process[0].model.name_or_path}
-              docKey="config.process[0].model.name_or_path"
-              onChange={(value: string | null) => {
-                if (value?.trim() === '') {
-                  value = null;
-                }
-                setJobConfig(value, 'config.process[0].model.name_or_path');
-              }}
-              placeholder=""
-              required
-            />
+            <div className="flex items-end gap-2">
+              <SelectInput
+                className="flex-1 min-w-0"
+                label="Model Architecture"
+                value={jobConfig.config.process[0].model.arch}
+                onChange={value => {
+                  handleModelArchChange(jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
+                }}
+                options={filteredModelOptions}
+              />
+              <button
+                type="button"
+                onClick={() => setModelSettingsOpen(true)}
+                title="Model settings (choose which architectures appear, set the models folder)"
+                className="shrink-0 h-[38px] px-2.5 flex items-center justify-center bg-gray-950 dark:bg-gray-800 border border-gray-700 rounded-sm text-gray-300 hover:text-white hover:bg-gray-700"
+              >
+                <SettingsIcon className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex items-end gap-2">
+              <TextInput
+                className="flex-1 min-w-0"
+                label="Name or Path"
+                value={jobConfig.config.process[0].model.name_or_path}
+                docKey="config.process[0].model.name_or_path"
+                onChange={(value: string | null) => {
+                  if (value?.trim() === '') {
+                    value = null;
+                  }
+                  setJobConfig(value, 'config.process[0].model.name_or_path');
+                }}
+                placeholder=""
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setBrowseOpen(true)}
+                title="Browse for the model folder or file"
+                className="shrink-0 h-[30px] px-2.5 flex items-center justify-center bg-gray-950 dark:bg-gray-800 border border-gray-700 rounded-sm text-gray-300 hover:text-white hover:bg-gray-700"
+              >
+                <FolderOpen className="w-4 h-4" />
+              </button>
+            </div>
             {modelArch?.additionalSections?.includes('model.assistant_lora_path') && (
               <TextInput
                 label="Training Adapter Path"
@@ -429,12 +461,6 @@ export default function SimpleJob({
               </>
             )}
           </Card>
-          <PresetPicker
-            archName={jobConfig.config.process[0].model.arch}
-            detectedVramGB={detectedVramGB}
-            gpuName={selectedGpu?.name}
-            setJobConfig={setJobConfig}
-          />
           {disableSections.includes('model.quantize') ? null : (
             <Card title="Quantize / Compile">
               <SelectInput
@@ -1737,6 +1763,23 @@ export default function SimpleJob({
               idx < existing.length - 1 || (s.prompt && s.prompt.trim().length > 0),
           );
           setJobConfig([...trimmed, ...additions], 'config.process[0].sample.samples');
+        }}
+      />
+      <ModelSettingsModal
+        open={modelSettingsOpen}
+        onClose={() => setModelSettingsOpen(false)}
+        settings={appSettings}
+        setSettings={setAppSettings}
+        onSelectModel={selectedPath => {
+          setJobConfig(selectedPath, 'config.process[0].model.name_or_path');
+        }}
+      />
+      <FolderBrowserModal
+        open={browseOpen}
+        onClose={() => setBrowseOpen(false)}
+        initialPath={jobConfig.config.process[0].model.name_or_path || appSettings.MODELS_FOLDER || undefined}
+        onSelect={selectedPath => {
+          setJobConfig(selectedPath, 'config.process[0].model.name_or_path');
         }}
       />
     </>

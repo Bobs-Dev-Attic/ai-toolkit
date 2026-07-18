@@ -18,6 +18,35 @@ def flush(garbage_collect=True):
         gc.collect()
 
 
+def get_vram_info(device=None):
+    """Return (free_gb, total_gb, used_gb) for a CUDA device, or None if no CUDA.
+
+    Uses torch.cuda.mem_get_info, which reports device-wide memory (including
+    memory held by other processes), so it reflects what is actually available
+    for training rather than just this process's allocations.
+    """
+    if not torch.cuda.is_available():
+        return None
+    if device is None:
+        device = torch.cuda.current_device()
+    free, total = torch.cuda.mem_get_info(device)
+    gb = 1024 ** 3
+    return free / gb, total / gb, (total - free) / gb
+
+
+def vram_status_string(label="", device=None):
+    """Format a human-readable VRAM usage/availability string for notifications."""
+    info = get_vram_info(device)
+    prefix = f"{label} - " if label else ""
+    if info is None:
+        return f"{prefix}VRAM: no CUDA device available"
+    free_gb, total_gb, used_gb = info
+    return (
+        f"{prefix}VRAM: {used_gb:.2f} GB used / {total_gb:.2f} GB total "
+        f"({free_gb:.2f} GB free)"
+    )
+
+
 def get_mean_std(tensor):
     if len(tensor.shape) == 3:
         tensor = tensor.unsqueeze(0)

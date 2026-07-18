@@ -342,6 +342,7 @@ class Wan21(BaseModel):
         return scheduler
     
     def load_wan_transformer(self, transformer_path, subfolder=None):
+        self._report_vram("Before loading transformer")
         self.print_and_status_update("Loading transformer")
         dtype = self.torch_dtype
         transformer = WanTransformer3DModel.from_pretrained(
@@ -361,6 +362,7 @@ class Wan21(BaseModel):
         else:
             transformer.to(self.device_torch, dtype=dtype)
             flush()
+        self._report_vram("After loading transformer")
 
         if self.model_config.assistant_lora_path is not None or self.model_config.inference_lora_path is not None:
             raise ValueError(
@@ -371,22 +373,25 @@ class Wan21(BaseModel):
                 "Loading LoRA is not supported for Wan2.1 models currently")
 
         flush()
-        
+
         if self.model_config.quantize:
             self.print_and_status_update("Quantizing Transformer")
             quantize_model(self, transformer)
             flush()
-        
+            self._report_vram("After quantizing transformer")
+
         if self.model_config.layer_offloading and self.model_config.layer_offloading_transformer_percent > 0:
             MemoryManager.attach(
                 transformer,
                 self.device_torch,
                 offload_percent=self.model_config.layer_offloading_transformer_percent
             )
-        
+
         if self.model_config.low_vram:
             self.print_and_status_update("Moving transformer to CPU")
             transformer.to('cpu')
+            flush()
+            self._report_vram("After moving transformer to CPU")
 
         return transformer
 

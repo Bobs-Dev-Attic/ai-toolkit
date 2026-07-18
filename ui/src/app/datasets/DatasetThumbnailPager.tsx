@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiClient } from '@/utils/api';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
-import Link from 'next/link';
+import ImageLightbox from '@/components/ImageLightbox';
 
 interface Props {
   datasetName: string;
@@ -36,6 +36,7 @@ export default function DatasetThumbnailPager({
   const [, setTick] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
   useEffect(() => {
     if (!wrapperRef.current) return;
@@ -136,21 +137,30 @@ export default function DatasetThumbnailPager({
         <ChevronLeft className="w-5 h-5" />
       </button>
 
-      <Link
-        href={`/datasets/${datasetName}`}
+      <div
         className="flex flex-wrap gap-1 flex-1 min-w-0"
         style={{ gap: `${THUMB_GAP_PX}px` }}
       >
-        {visible.map(p => (
-          <img
-            key={p}
-            src={`/api/img/${encodeURIComponent(p)}`}
-            alt=""
-            loading="lazy"
-            style={{ height: THUMB_PX, width: THUMB_PX }}
-            className="object-cover rounded border border-gray-800 flex-shrink-0"
-          />
-        ))}
+        {visible.map(p => {
+          const url = `/api/img/${encodeURIComponent(p)}`;
+          return (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setLightboxSrc(url)}
+              style={{ height: THUMB_PX, width: THUMB_PX }}
+              className="rounded border border-gray-800 flex-shrink-0 overflow-hidden cursor-zoom-in hover:border-gray-500 transition-colors p-0"
+              title="Click to expand"
+            >
+              <img
+                src={url}
+                alt=""
+                loading="lazy"
+                className="h-full w-full object-cover"
+              />
+            </button>
+          );
+        })}
         {entry.loading && (
           <span
             style={{ height: THUMB_PX, width: THUMB_PX }}
@@ -159,7 +169,8 @@ export default function DatasetThumbnailPager({
             <Loader2 className="w-5 h-5 animate-spin" />
           </span>
         )}
-      </Link>
+      </div>
+      <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
 
       <button
         type="button"

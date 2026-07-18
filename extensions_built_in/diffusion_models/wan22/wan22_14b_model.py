@@ -5,7 +5,8 @@ from typing_extensions import Self
 import torch
 import yaml
 from toolkit.accelerator import unwrap_model
-from toolkit.basic import flush
+from toolkit.basic import flush, vram_status_string
+from toolkit.print import print_acc
 from toolkit.models.wan21.wan_utils import add_first_frame_conditioning
 from toolkit.prompt_utils import PromptEmbeds
 from PIL import Image
@@ -85,6 +86,9 @@ class DualWanTransformer3DModel(torch.nn.Module):
         self.boundary: float = self.boundary_ratio * 1000
         self.low_vram: bool = low_vram
         self._active_transformer_name = "transformer_1"  # default to transformer_1
+        # rate-limited VRAM reporting for the low_vram transformer swap
+        self._swap_count: int = 0
+        self.vram_report_every: int = 20
 
     @property
     def device(self) -> torch.device:
@@ -135,6 +139,16 @@ class DualWanTransformer3DModel(torch.nn.Module):
                     getattr(self, self._active_transformer_name).to("cpu")
                     getattr(self, t_name).to(self.device_torch)
                     torch.cuda.empty_cache()
+                    # rate-limited VRAM notification so we don't flood the logs
+                    # every step (a swap can happen on nearly every step)
+                    self._swap_count += 1
+                    if self.vram_report_every > 0 and (
+                        self._swap_count % self.vram_report_every == 0
+                    ):
+                        print_acc(vram_status_string(
+                            f"low_vram swap #{self._swap_count} -> {t_name} active",
+                            self.device_torch,
+                        ))
                 self._active_transformer_name = t_name
 
         if self.transformer.device != hidden_states.device:
@@ -279,6 +293,8 @@ class Wan2214bModel(Wan21):
             # we have a hf path, replace it with transformer_2 subfolder
             subfolder_2 = "transformer_2"
 
+        self._report_vram("Before loading transformers")
+
         self.print_and_status_update("Loading transformer 1")
         dtype = self.torch_dtype
         transformer_1 = WanTransformer3DModel.from_pretrained(
@@ -296,16 +312,20 @@ class Wan2214bModel(Wan21):
         else:
             transformer_1.to(self.device_torch, dtype=dtype)
             flush()
+        self._report_vram("After loading transformer 1")
 
         if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
             # todo handle two ARAs
             self.print_and_status_update("Quantizing Transformer 1")
             quantize_model(self, transformer_1)
             flush()
+            self._report_vram("After quantizing transformer 1")
 
         if self.model_config.low_vram:
             self.print_and_status_update("Moving transformer 1 to CPU")
             transformer_1.to("cpu")
+            flush()
+            self._report_vram("After moving transformer 1 to CPU")
         else:
             transformer_1.to(self.device_torch)
 
@@ -326,19 +346,23 @@ class Wan2214bModel(Wan21):
         else:
             transformer_2.to(self.device_torch, dtype=dtype)
             flush()
+        self._report_vram("After loading transformer 2")
 
         if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
             # todo handle two ARAs
             self.print_and_status_update("Quantizing Transformer 2")
             quantize_model(self, transformer_2)
             flush()
+            self._report_vram("After quantizing transformer 2")
 
         if self.model_config.low_vram:
             self.print_and_status_update("Moving transformer 2 to CPU")
             transformer_2.to("cpu")
+            flush()
+            self._report_vram("After moving transformer 2 to CPU")
         else:
             transformer_2.to(self.device_torch)
-    
+
         layer_offloading_transformer = self.model_config.layer_offloading and self.model_config.layer_offloading_transformer_percent > 0
         # make the combined model
         self.print_and_status_update("Creating DualWanTransformer3DModel")
@@ -371,6 +395,8 @@ class Wan2214bModel(Wan21):
                 offload_percent=self.model_config.layer_offloading_transformer_percent,
                 ignore_modules=[transformer_2.scale_shift_table] + [block.scale_shift_table for block in transformer_2.blocks]
             )
+
+        self._report_vram("Transformers ready")
 
         return transformer
 

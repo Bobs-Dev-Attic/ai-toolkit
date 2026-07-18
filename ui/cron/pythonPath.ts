@@ -10,6 +10,13 @@ export const resolvePythonPath = (): string => {
   const candidates: string[] = [];
 
   if (isWindows) {
+    // Bundled python_embeded ships next to AI-Toolkit in the Easy-Install layout
+    // (one or two directories above TOOLKIT_ROOT). Prefer it over .venv/venv
+    // and over whatever bare `python.exe` is on PATH, because this is the
+    // interpreter that has the toolkit's pinned packages installed.
+    candidates.push(path.resolve(TOOLKIT_ROOT, '..', 'python_embeded', 'python.exe'));
+    candidates.push(path.resolve(TOOLKIT_ROOT, '..', '..', 'python_embeded', 'python.exe'));
+    candidates.push(path.resolve(TOOLKIT_ROOT, '..', '..', '..', 'python_embeded', 'python.exe'));
     candidates.push(path.join(TOOLKIT_ROOT, '.venv', 'Scripts', 'python.exe'));
     candidates.push(path.join(TOOLKIT_ROOT, 'venv', 'Scripts', 'python.exe'));
   } else {

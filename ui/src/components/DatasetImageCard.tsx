@@ -1,9 +1,11 @@
 import React, { useRef, useEffect, useState, ReactNode, KeyboardEvent } from 'react';
 import { FaCheck } from 'react-icons/fa';
+import { Search } from 'lucide-react';
 import classNames from 'classnames';
 import { apiClient } from '@/utils/api';
 import AudioPlayer from './AudioPlayer';
 import { isVideo, isAudio } from '@/utils/basic';
+import ImageLightbox from './ImageLightbox';
 
 interface DatasetImageCardProps {
   imageUrl: string;
@@ -47,6 +49,7 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
   const [isVisible, setIsVisible] = useState<boolean>(false);
   const [inViewport, setInViewport] = useState<boolean>(false);
   const [loaded, setLoaded] = useState<boolean>(false);
+  const [lightboxOpen, setLightboxOpen] = useState<boolean>(false);
   const [isCaptionLoaded, setIsCaptionLoaded] = useState<boolean>(false);
   const [caption, setCaption] = useState<string>('');
   const [savedCaption, setSavedCaption] = useState<string>('');
@@ -218,6 +221,21 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
               </span>
             </div>
           )}
+          {isItImage && (
+            <button
+              type="button"
+              onClick={e => {
+                // Don't let the click bubble to the card's select-toggle handler.
+                e.stopPropagation();
+                setLightboxOpen(true);
+              }}
+              title="Expand to full screen"
+              aria-label="Expand image"
+              className="absolute top-1 right-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-gray-900/70 text-gray-200 hover:bg-gray-800 hover:text-white shadow border border-gray-700/60 transition-colors"
+            >
+              <Search className="h-4 w-4" />
+            </button>
+          )}
           {showMetadata && isItImage && (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/60 to-transparent px-2 py-1.5 text-xs leading-tight text-white">
               <div className="truncate font-medium" title={filename}>
@@ -263,6 +281,7 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
           <div className="w-full h-full flex items-center justify-center text-gray-400">Loading caption...</div>
         )}
       </div>
+      {lightboxOpen && <ImageLightbox src={mediaSrc} alt={alt} onClose={() => setLightboxOpen(false)} />}
     </div>
   );
 };

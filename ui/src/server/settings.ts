@@ -67,6 +67,25 @@ export const getHFToken = async () => {
   return token;
 };
 
+export const getModelsFolder = async () => {
+  const key = 'MODELS_FOLDER';
+  let modelsFolder = myCache.get(key) as string;
+  if (modelsFolder) {
+    return modelsFolder;
+  }
+  let row = await prisma.settings.findFirst({
+    where: {
+      key: key,
+    },
+  });
+  modelsFolder = '';
+  if (row?.value && row.value !== '') {
+    modelsFolder = row.value;
+  }
+  myCache.set(key, modelsFolder);
+  return modelsFolder;
+};
+
 export const getDataRoot = async () => {
   const key = 'DATA_ROOT';
   let dataRoot = myCache.get(key) as string;

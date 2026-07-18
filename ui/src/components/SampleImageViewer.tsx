@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Dialog, DialogBackdrop, DialogPanel } from '@headlessui/react';
 import { SampleConfig, SampleItem } from '@/types';
-import { Cog, SquareDashed } from 'lucide-react';
+import { Cog, SquareDashed, ChevronLeft, ChevronRight } from 'lucide-react';
 import classNames from 'classnames';
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { openConfirm } from './ConfirmModal';
@@ -34,6 +34,10 @@ export default function SampleImageViewer({
   const [isOpen, setIsOpen] = useState(Boolean(imgPath));
   const [showingControlIdx, setShowingControlIdx] = useState<number | null>(null);
   const [showBoxes, setShowBoxes] = useState<boolean>(false);
+  // natural pixel dimensions of the currently displayed media (from the DOM element)
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+  // file metadata (size + create date) fetched from the server
+  const [fileMeta, setFileMeta] = useState<{ sizeBytes: number; createdMs: number } | null>(null);
 
   useEffect(() => setMounted(true), []);
 
@@ -128,6 +132,18 @@ export default function SampleImageViewer({
     setImageAtIndex(nextIdx);
   }, [sampleImages, currentIndex, imgInfo.promptIdx, setImageAtIndex]);
 
+  // Global next/previous across every sample, in chronological order — drives the
+  // on-screen arrow buttons so the user can step through images one at a time.
+  const handlePrevImage = useCallback(() => {
+    if (currentIndex <= 0) return;
+    setImageAtIndex(currentIndex - 1);
+  }, [currentIndex, setImageAtIndex]);
+
+  const handleNextImage = useCallback(() => {
+    if (currentIndex === -1 || currentIndex >= sampleImages.length - 1) return;
+    setImageAtIndex(currentIndex + 1);
+  }, [currentIndex, sampleImages.length, setImageAtIndex]);
+
   const handleDelete = useCallback(() => {
     if (!imgPath) return;
     openConfirm({
@@ -198,6 +214,35 @@ export default function SampleImageViewer({
     }
     return imgPath;
   }, [showingControlIdx, controlImages, imgPath]);
+
+  // Reset dimensions and pull fresh file metadata whenever the displayed media changes.
+  useEffect(() => {
+    setDims(null);
+    setFileMeta(null);
+    if (!displayedImgPath) return;
+    let cancelled = false;
+    apiClient
+      .get('/api/img/meta', { params: { path: displayedImgPath } })
+      .then(res => {
+        if (!cancelled) setFileMeta(res.data);
+      })
+      .catch(() => {
+        if (!cancelled) setFileMeta(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [displayedImgPath]);
+
+  const metaLines = useMemo(() => {
+    const lines: { label: string; value: string }[] = [];
+    if (dims) lines.push({ label: 'Dimensions', value: `${dims.w} × ${dims.h}` });
+    if (fileMeta) {
+      lines.push({ label: 'Size', value: `${(fileMeta.sizeBytes / (1024 * 1024)).toFixed(2)} MB` });
+      lines.push({ label: 'Created', value: new Date(fileMeta.createdMs).toLocaleString() });
+    }
+    return lines;
+  }, [dims, fileMeta]);
 
   // The sample's prompt is what generated it; if it's an Ideogram bbox-JSON we can
   // overlay the boxes on the generated image. Only on the main image (not controls).
@@ -323,11 +368,14 @@ export default function SampleImageViewer({
                   <video
                     src={`/api/img/${encodeURIComponent(displayedImgPath)}`}
                     className="w-auto h-auto max-w-full sm:max-w-[95vw] max-h-[82vh] object-contain"
-                    preload="none"
+                    preload="metadata"
                     playsInline
                     loop
                     autoPlay
                     controls={true}
+                    onLoadedMetadata={e =>
+                      setDims({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })
+                    }
                   />
                 ) : (
                   <TransformWrapper
@@ -349,6 +397,9 @@ export default function SampleImageViewer({
                           alt="Sample Image"
                           draggable={false}
                           className="w-auto h-auto max-w-full sm:max-w-[95vw] max-h-[82vh] object-contain select-none !pointer-events-auto"
+                          onLoad={e =>
+                            setDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
+                          }
                         />
                         {showBoxes && canShowBoxes && boundingBoxes && <BoundingBoxOverlay boxes={boundingBoxes} />}
                       </div>
@@ -406,6 +457,46 @@ export default function SampleImageViewer({
                 </div>
               </div>
             </div>
+            {/* Metadata overlay (top-left): dimensions, file size, create date */}
+            {metaLines.length > 0 && (
+              <div className="absolute top-2 left-2 z-20 rounded bg-gray-900/70 backdrop-blur-sm px-3 py-2 text-[11px] leading-tight text-gray-100 pointer-events-none max-w-[60%]">
+                {metaLines.map(line => (
+                  <div key={line.label}>
+                    <span className="text-gray-400 mr-1">{line.label}:</span>
+                    <span>{line.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Previous / Next arrows to step through samples */}
+            {currentIndex > 0 && (
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  handlePrevImage();
+                }}
+                title="Previous image"
+                className="absolute left-1 sm:left-2 top-1/2 -translate-y-1/2 z-20 bg-gray-900/60 hover:bg-gray-900/90 text-white rounded-full p-1 sm:p-2 opacity-70 hover:opacity-100"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+            )}
+            {currentIndex !== -1 && currentIndex < sampleImages.length - 1 && (
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  handleNextImage();
+                }}
+                title="Next image"
+                className="absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 z-20 bg-gray-900/60 hover:bg-gray-900/90 text-white rounded-full p-1 sm:p-2 opacity-70 hover:opacity-100"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+            )}
+
             <div className="absolute top-2 right-2 flex items-center gap-2 z-20">
               {canShowBoxes && (
                 <button

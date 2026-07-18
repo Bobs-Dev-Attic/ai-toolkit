@@ -7,10 +7,12 @@ import { Job } from '@prisma/client';
 import { TopBar, MainContent } from '@/components/layout';
 import { apiClient } from '@/utils/api';
 import { CgSpinner } from 'react-icons/cg';
-import { Download, Upload, GitCompare, Trash2, Pencil, Play } from 'lucide-react';
+import { Download, Upload, GitCompare, Trash2, Pencil, Play, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import classNames from 'classnames';
 
 type FilterMode = 'all' | 'drafts' | 'past';
+type SortKey = 'name' | 'status' | 'gpu_ids' | 'created_at' | 'updated_at';
+type SortDir = 'asc' | 'desc';
 
 interface FlatRow {
   path: string;
@@ -90,6 +92,22 @@ export default function DraftJobsPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [compareOpen, setCompareOpen] = useState(false);
   const [onlyDiffs, setOnlyDiffs] = useState(true);
+  const [sortKey, setSortKey] = useState<SortKey>('updated_at');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'created_at' || key === 'updated_at' ? 'desc' : 'asc');
+    }
+  };
+
+  const sortIcon = (key: SortKey) => {
+    if (sortKey !== key) return <ArrowUpDown className="w-3 h-3 opacity-40" />;
+    return sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />;
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = () => {
@@ -118,8 +136,22 @@ export default function DraftJobsPage() {
       const q = search.toLowerCase();
       rows = rows.filter(j => j.name.toLowerCase().includes(q));
     }
-    return rows;
-  }, [jobs, filter, search]);
+    const sorted = [...rows].sort((a, b) => {
+      const av = (a as any)[sortKey];
+      const bv = (b as any)[sortKey];
+      if (sortKey === 'created_at' || sortKey === 'updated_at') {
+        const an = new Date(av).getTime();
+        const bn = new Date(bv).getTime();
+        return sortDir === 'asc' ? an - bn : bn - an;
+      }
+      const as = String(av ?? '').toLowerCase();
+      const bs = String(bv ?? '').toLowerCase();
+      if (as < bs) return sortDir === 'asc' ? -1 : 1;
+      if (as > bs) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }, [jobs, filter, search, sortKey, sortDir]);
 
   const toggleSelect = (id: string) => {
     setSelected(prev => {
@@ -356,11 +388,46 @@ export default function DraftJobsPage() {
               <thead className="bg-gray-800 text-gray-300">
                 <tr>
                   <th className="px-3 py-2 text-left w-10"></th>
-                  <th className="px-3 py-2 text-left">Name</th>
-                  <th className="px-3 py-2 text-left">Status</th>
-                  <th className="px-3 py-2 text-left">GPU</th>
-                  <th className="px-3 py-2 text-left">Created</th>
-                  <th className="px-3 py-2 text-left">Updated</th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      onClick={() => toggleSort('name')}
+                      className="flex items-center gap-1 hover:text-white"
+                    >
+                      Name {sortIcon('name')}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      onClick={() => toggleSort('status')}
+                      className="flex items-center gap-1 hover:text-white"
+                    >
+                      Status {sortIcon('status')}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      onClick={() => toggleSort('gpu_ids')}
+                      className="flex items-center gap-1 hover:text-white"
+                    >
+                      GPU {sortIcon('gpu_ids')}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      onClick={() => toggleSort('created_at')}
+                      className="flex items-center gap-1 hover:text-white"
+                    >
+                      Created {sortIcon('created_at')}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      onClick={() => toggleSort('updated_at')}
+                      className="flex items-center gap-1 hover:text-white"
+                    >
+                      Updated {sortIcon('updated_at')}
+                    </button>
+                  </th>
                   <th className="px-3 py-2 text-right">Actions</th>
                 </tr>
               </thead>
