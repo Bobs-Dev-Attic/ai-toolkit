@@ -125,10 +125,23 @@ class Krea2Model(BaseModel):
             self.model_config.layer_offloading
             and self.model_config.layer_offloading_transformer_percent > 0
         ):
+            # MemoryManager.attach only walks named_modules(), so bare
+            # nn.Parameters are never collected and would be left on CPU while
+            # activations sit on the GPU. Krea 2 keeps a per-block
+            # `scale_shift_table` Parameter directly on each transformer block
+            # (and on the output norm), which the block adds to `temb` in its
+            # forward. Register them as unmanaged so memory_managed_to() moves
+            # them with the rest of the model.
+            bare_params = [
+                p
+                for name, p in transformer.named_parameters()
+                if name.endswith("scale_shift_table")
+            ]
             MemoryManager.attach(
                 transformer,
                 self.device_torch,
                 offload_percent=self.model_config.layer_offloading_transformer_percent,
+                ignore_modules=bare_params,
             )
 
         if self.model_config.low_vram:
