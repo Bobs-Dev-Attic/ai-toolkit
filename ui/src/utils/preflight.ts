@@ -38,6 +38,8 @@ interface ArchSize {
 function archSize(arch: string): ArchSize {
   const a = (arch || '').toLowerCase();
   // order matters: match most specific first
+  // 12.9B transformer (~26GB bf16) + Qwen3-VL-4B text encoder (~8GB)
+  if (a.includes('krea2')) return { transformerGB: 26, teGB: 8, label: 'Krea 2' };
   if (a.includes('flux2') || a.includes('klein')) return { transformerGB: 18, teGB: 16, label: 'Flux.2 Klein 9B' };
   if (a.includes('wan22_14b') || a.includes('wan21_14b') || a.includes('wan2_14b'))
     return { transformerGB: 28, teGB: 11, label: 'Wan 14B (dual expert)' };

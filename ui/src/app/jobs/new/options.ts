@@ -354,6 +354,26 @@ export const modelArchs: ModelArch[] = [
     disableSections: ['network.conv'],
   },
   {
+    name: 'krea2',
+    label: 'Krea 2 (Raw)',
+    group: 'image',
+    defaults: {
+      // Krea-2-Raw is the undistilled base checkpoint and is the variant Krea
+      // recommends for fine-tuning. Krea-2-Turbo is distilled and trains poorly.
+      'config.process[0].model.name_or_path': ['krea/Krea-2-Raw', defaultNameOrPath],
+      // 12.9B transformer + Qwen3-VL text encoder, quantize both by default
+      'config.process[0].model.quantize': [true, false],
+      'config.process[0].model.quantize_te': [true, false],
+      'config.process[0].model.low_vram': [true, false],
+      'config.process[0].sample.sampler': ['flowmatch', 'flowmatch'],
+      'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
+      'config.process[0].train.timestep_type': ['weighted', 'sigmoid'],
+      'config.process[0].model.qtype': ['qfloat8', 'qfloat8'],
+    },
+    disableSections: ['network.conv'],
+    additionalSections: ['model.low_vram', 'model.layer_offloading'],
+  },
+  {
     name: 'qwen_image',
     label: 'Qwen-Image',
     group: 'image',

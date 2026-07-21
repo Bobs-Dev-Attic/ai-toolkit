@@ -599,6 +599,9 @@ CONFIG_PRESETS['hidream_o1'] = CONFIG_PRESETS.hidream;
 CONFIG_PRESETS['flux_kontext'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['chroma'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['zeta_chroma'] = CONFIG_PRESETS.flux;
+// Krea 2 shares the Qwen-Image VAE and flow-matching setup, and sits in the same
+// VRAM class, so the Qwen-Image presets transfer directly.
+CONFIG_PRESETS['krea2'] = CONFIG_PRESETS.qwen_image;
 CONFIG_PRESETS['flex1'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['flex2'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['flux2'] = CONFIG_PRESETS.flux;
