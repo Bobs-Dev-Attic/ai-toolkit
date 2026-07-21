@@ -162,6 +162,87 @@ export const CONFIG_PRESETS: Record<string, ConfigPreset[]> = {
   ],
 
   // ───────────────────────────────────────────────────────────────────
+  // Krea 2 (12.8B transformer + Qwen3-VL-4B TE, Qwen-Image VAE)
+  //
+  // SYSTEM RAM is the binding constraint here, not VRAM. ai-toolkit loads the
+  // full bf16 transformer (~25.6 GB) into CPU RAM before quantizing it, so a
+  // 32 GB machine cannot load this model at all regardless of which preset is
+  // chosen — the preflight check reports this as `ram-weights`. 64 GB of RAM is
+  // the practical floor until the load path quantizes shard-by-shard.
+  //
+  // The approxVramGB figures below assume the model has loaded successfully.
+  // Note there is no accuracy recovery adapter for Krea 2, so unlike Qwen-Image
+  // there is no usable uint3 tier.
+  // ───────────────────────────────────────────────────────────────────
+  krea2: [
+    {
+      id: 'krea2-memory',
+      label: 'Memory',
+      description: '14–18 GB VRAM. FP8 both + layer offload. Needs 64 GB system RAM.',
+      approxVramGB: 16,
+      tier: 'memory',
+      overrides: {
+        'config.process[0].model.quantize': true,
+        'config.process[0].model.qtype': 'qfloat8',
+        'config.process[0].model.quantize_te': true,
+        'config.process[0].model.qtype_te': 'qfloat8',
+        'config.process[0].model.low_vram': true,
+        'config.process[0].model.layer_offloading': true,
+        'config.process[0].model.layer_offloading_transformer_percent': 0.5,
+        'config.process[0].model.layer_offloading_text_encoder_percent': 1.0,
+        // caching text embeddings lets the 4B TE leave VRAM after the first pass
+        'config.process[0].train.cache_text_embeddings': true,
+        'config.process[0].train.gradient_checkpointing': true,
+        'config.process[0].train.gradient_accumulation': 4,
+        'config.process[0].train.batch_size': 1,
+        'config.process[0].datasets[0].cache_latents_to_disk': true,
+        'config.process[0].datasets[0].resolution': [512, 768],
+      },
+    },
+    {
+      id: 'krea2-balanced',
+      label: 'Balanced',
+      description: '20–26 GB VRAM. FP8 both, no offload. Recommended on 32 GB cards.',
+      approxVramGB: 23,
+      tier: 'balanced',
+      overrides: {
+        'config.process[0].model.quantize': true,
+        'config.process[0].model.qtype': 'qfloat8',
+        'config.process[0].model.quantize_te': true,
+        'config.process[0].model.qtype_te': 'qfloat8',
+        'config.process[0].model.low_vram': true,
+        'config.process[0].model.layer_offloading': false,
+        'config.process[0].train.cache_text_embeddings': true,
+        'config.process[0].train.gradient_checkpointing': true,
+        'config.process[0].train.gradient_accumulation': 1,
+        'config.process[0].train.batch_size': 1,
+        'config.process[0].datasets[0].cache_latents_to_disk': true,
+        'config.process[0].datasets[0].resolution': [512, 768, 1024],
+      },
+    },
+    {
+      id: 'krea2-quality',
+      label: 'Quality',
+      description: '38+ GB VRAM. bf16 transformer + FP8 TE. Needs an A6000/H100-class card.',
+      approxVramGB: 40,
+      tier: 'quality',
+      overrides: {
+        'config.process[0].model.quantize': false,
+        'config.process[0].model.quantize_te': true,
+        'config.process[0].model.qtype_te': 'qfloat8',
+        'config.process[0].model.low_vram': false,
+        'config.process[0].model.layer_offloading': false,
+        'config.process[0].train.cache_text_embeddings': true,
+        'config.process[0].train.gradient_checkpointing': true,
+        'config.process[0].train.gradient_accumulation': 1,
+        'config.process[0].train.batch_size': 1,
+        'config.process[0].datasets[0].cache_latents_to_disk': true,
+        'config.process[0].datasets[0].resolution': [512, 768, 1024],
+      },
+    },
+  ],
+
+  // ───────────────────────────────────────────────────────────────────
   // SDXL (lightweight compared to FLUX/Qwen; can fit much more comfortably)
   // ───────────────────────────────────────────────────────────────────
   sdxl: [
@@ -599,9 +680,6 @@ CONFIG_PRESETS['hidream_o1'] = CONFIG_PRESETS.hidream;
 CONFIG_PRESETS['flux_kontext'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['chroma'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['zeta_chroma'] = CONFIG_PRESETS.flux;
-// Krea 2 shares the Qwen-Image VAE and flow-matching setup, and sits in the same
-// VRAM class, so the Qwen-Image presets transfer directly.
-CONFIG_PRESETS['krea2'] = CONFIG_PRESETS.qwen_image;
 CONFIG_PRESETS['flex1'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['flex2'] = CONFIG_PRESETS.flux;
 CONFIG_PRESETS['flux2'] = CONFIG_PRESETS.flux;
