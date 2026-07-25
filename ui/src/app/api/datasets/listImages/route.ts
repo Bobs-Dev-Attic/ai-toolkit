@@ -25,7 +25,9 @@ export async function POST(request: Request) {
     imageFiles.sort((a, b) => a.localeCompare(b));
 
     const result = imageFiles.map(imgPath => {
-      const item: { img_path: string; size?: number; width?: number; height?: number } = { img_path: imgPath };
+      const item: { img_path: string; size?: number; width?: number; height?: number; caption?: string } = {
+        img_path: imgPath,
+      };
       try {
         item.size = fs.statSync(imgPath).size;
         // Reading the image header is cheap (a few KB), much faster than
@@ -34,6 +36,12 @@ export async function POST(request: Request) {
           const dims = imageSize(fs.readFileSync(imgPath));
           item.width = dims.width;
           item.height = dims.height;
+        }
+        // Sibling caption (the training prompt for this image). Datasets pair
+        // each image with a same-basename .txt (caption_ext defaults to txt).
+        const captionPath = imgPath.replace(/\.[^./\\]+$/, '.txt');
+        if (captionPath !== imgPath && fs.existsSync(captionPath)) {
+          item.caption = fs.readFileSync(captionPath, 'utf-8').trim();
         }
       } catch {
         // best-effort; leave the fields undefined

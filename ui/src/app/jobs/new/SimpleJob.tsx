@@ -30,6 +30,8 @@ import Card from '@/components/Card';
 import { X, Copy, Wand2, SquareDashed, Settings as SettingsIcon, FolderOpen } from 'lucide-react';
 import ModelSettingsModal from '@/components/ModelSettingsModal';
 import FolderBrowserModal from '@/components/FolderBrowserModal';
+import DatasetGalleryModal from '@/components/DatasetGalleryModal';
+import { Images } from 'lucide-react';
 import { openUpsamplePromptsModal, toAspectRatio } from '@/components/UpsamplePromptsModal';
 import { openPromptBoxEditor } from '@/components/PromptBoxEditorModal';
 import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleImageModal';
@@ -70,6 +72,8 @@ export default function SimpleJob({
   const { settings: appSettings, setSettings: setAppSettings } = useSettings();
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Basename of the dataset whose gallery is open, or null when closed.
+  const [galleryDataset, setGalleryDataset] = useState<string | null>(null);
 
   // Filter the architecture dropdown by the user's enabled list (set in
   // Settings → Models). Empty list = show every architecture.
@@ -980,12 +984,28 @@ export default function SimpleJob({
                   <h2 className="text-lg font-bold mb-4">Dataset {i + 1}</h2>
                   <div className={datasetStyleClass}>
                     <div>
-                      <SelectInput
-                        label="Target Dataset"
-                        value={dataset.folder_path}
-                        onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].folder_path`)}
-                        options={datasetOptions}
-                      />
+                      <div className="flex items-end gap-2">
+                        <div className="flex-1 min-w-0">
+                          <SelectInput
+                            label="Target Dataset"
+                            value={dataset.folder_path}
+                            onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].folder_path`)}
+                            options={datasetOptions}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          title="Preview dataset images"
+                          disabled={!dataset.folder_path}
+                          onClick={() => {
+                            const base = (dataset.folder_path || '').replace(/[/\\]+$/, '').split(/[/\\]/).pop() || '';
+                            if (base) setGalleryDataset(base);
+                          }}
+                          className="mb-1 shrink-0 p-2 rounded-md border border-gray-700 text-gray-300 hover:text-gray-100 hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Images className="w-4 h-4" />
+                        </button>
+                      </div>
                       {modelArch?.additionalSections?.includes('datasets.control_path') && (
                         <SelectInput
                           label="Control Dataset"
@@ -1782,6 +1802,7 @@ export default function SimpleJob({
           setJobConfig(selectedPath, 'config.process[0].model.name_or_path');
         }}
       />
+      <DatasetGalleryModal open={galleryDataset != null} datasetName={galleryDataset} onClose={() => setGalleryDataset(null)} />
     </>
   );
 }

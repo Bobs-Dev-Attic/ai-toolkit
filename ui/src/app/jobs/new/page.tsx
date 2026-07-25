@@ -122,17 +122,38 @@ export default function TrainingForm() {
     if (!isSettingsLoaded) return;
     if (datasetFetchStatus !== 'success') return;
 
-    const datasetOptions = datasets.map(name => ({ value: path.join(settings.DATASETS_FOLDER, name), label: name }));
-    setDatasetOptions(datasetOptions);
+    // Base options immediately; enrich labels with image counts once stats load.
+    const baseOptions = datasets.map(name => ({ value: path.join(settings.DATASETS_FOLDER, name), label: name }));
+    setDatasetOptions(baseOptions);
 
-    if (datasetOptions.length > 0) {
+    // Fetch image counts and append them to the dropdown labels, e.g. "melissa (25)".
+    // Best-effort: if stats fail, the base labels stay.
+    apiClient
+      .get('/api/datasets/stats')
+      .then(r => {
+        const counts = new Map<string, number>((r.data?.datasets ?? []).map((d: any) => [d.name, d.image_count]));
+        setDatasetOptions(
+          datasets.map(name => {
+            const c = counts.get(name);
+            return {
+              value: path.join(settings.DATASETS_FOLDER, name),
+              label: c != null ? `${name} (${c})` : name,
+            };
+          }),
+        );
+      })
+      .catch(() => {
+        /* keep base labels */
+      });
+
+    if (baseOptions.length > 0) {
       const defaultDatasetPath = defaultDatasetConfig.folder_path;
       // Use functional updater so we check the *current* state, not a stale closure
       setJobConfig((prev: JobConfig) => {
         let updated = prev;
         for (let i = 0; i < prev.config.process[0].datasets.length; i++) {
           if (prev.config.process[0].datasets[i].folder_path === defaultDatasetPath) {
-            updated = setNestedValue(updated, datasetOptions[0].value, `config.process[0].datasets[${i}].folder_path`);
+            updated = setNestedValue(updated, baseOptions[0].value, `config.process[0].datasets[${i}].folder_path`);
           }
         }
         return updated;
