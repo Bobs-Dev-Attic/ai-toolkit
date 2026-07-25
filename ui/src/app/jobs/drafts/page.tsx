@@ -7,7 +7,7 @@ import { Job } from '@prisma/client';
 import { TopBar, MainContent } from '@/components/layout';
 import { apiClient } from '@/utils/api';
 import { CgSpinner } from 'react-icons/cg';
-import { Download, Upload, GitCompare, Trash2, Pencil, Play, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Download, Upload, GitCompare, Trash2, Pencil, ListPlus, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import classNames from 'classnames';
 
 type FilterMode = 'all' | 'drafts' | 'past';
@@ -492,7 +492,7 @@ export default function DraftJobsPage() {
                               className="p-1 text-green-400 hover:text-green-300 hover:bg-gray-800 rounded"
                               title="Promote to queue"
                             >
-                              <Play className="w-4 h-4" />
+                              <ListPlus className="w-4 h-4" />
                             </button>
                           )}
                           <button

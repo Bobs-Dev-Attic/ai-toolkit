@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { JobConfig } from '@/types';
 import { apiClient } from '@/utils/api';
 import { analyzePreflight, Finding, FindingLevel, PreflightHardware } from '@/utils/preflight';
+import { reviewTrainingConfig } from '@/utils/configReview';
 import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive } from 'react-icons/lu';
 
 interface Props {
@@ -37,8 +38,9 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
       apiClient.get('/api/gpu').then(r => r.data).catch(() => null),
       apiClient.get('/api/cpu').then(r => r.data).catch(() => null),
       apiClient.get('/api/disk').then(r => r.data).catch(() => null),
+      apiClient.get('/api/datasets/stats').then(r => r.data).catch(() => null),
     ])
-      .then(([gpu, cpu, disk]) => {
+      .then(([gpu, cpu, disk, dsStats]) => {
         if (cancelled) return;
         const hardware: PreflightHardware = {
           gpus: (gpu?.gpus ?? []).map((g: any) => ({
@@ -53,7 +55,31 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
           diskTotalGB: disk?.training ? disk.training.totalBytes / 1024 ** 3 : null,
         };
         setHw(hardware);
-        setFindings(analyzePreflight(jobConfig, hardware));
+
+        // Sum real image counts for the job's datasets by matching folder
+        // basenames against /api/datasets/stats. null if stats unavailable, so
+        // the steps-per-image check is skipped rather than guessed.
+        let imageCount: number | null = null;
+        const statList: { name: string; image_count: number }[] = dsStats?.datasets ?? [];
+        if (statList.length > 0) {
+          const byName = new Map(statList.map(s => [s.name, s.image_count]));
+          const jobDatasets = jobConfig.config?.process?.[0]?.datasets ?? [];
+          let sum = 0;
+          let matched = 0;
+          for (const d of jobDatasets) {
+            const base = (d.folder_path || '').replace(/[/\\]+$/, '').split(/[/\\]/).pop() || '';
+            if (byName.has(base)) {
+              sum += byName.get(base) ?? 0;
+              matched += 1;
+            }
+          }
+          if (matched > 0) imageCount = sum;
+        }
+
+        const order: Record<FindingLevel, number> = { error: 0, warning: 1, info: 2, ok: 3 };
+        const merged = [...analyzePreflight(jobConfig, hardware), ...reviewTrainingConfig(jobConfig, imageCount)];
+        merged.sort((a, b) => order[a.level] - order[b.level]);
+        setFindings(merged);
       })
       .catch(e => {
         if (!cancelled) setErr(String(e));
@@ -81,7 +107,7 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
           <div className="px-5 py-4 border-b border-gray-800 shrink-0">
             <DialogTitle className="text-gray-100 text-lg font-medium">Pre-flight check</DialogTitle>
             <p className="text-sm text-gray-400 mt-0.5">
-              We checked your settings against this machine. Review any advice below, then confirm.
+              We checked your settings against this machine and reviewed the training config. Review any advice below, then confirm.
             </p>
           </div>
 
