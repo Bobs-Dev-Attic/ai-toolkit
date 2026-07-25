@@ -14,6 +14,14 @@ export interface PreflightHardware {
 
 export type FindingLevel = 'error' | 'warning' | 'info' | 'ok';
 
+// A concrete, machine-applicable change: a config path (setNestedValue format)
+// and the value to write. A finding may carry several (e.g. enable quantize +
+// quantize_te together). Only attached to deterministic, unambiguous remedies.
+export interface FindingFix {
+  path: string;
+  value: unknown;
+}
+
 export interface Finding {
   id: string;
   level: FindingLevel;
@@ -22,6 +30,8 @@ export interface Finding {
   setting?: string;
   current?: string;
   recommended?: string;
+  // When present, the UI offers to apply these changes to the job config.
+  fix?: FindingFix[];
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +140,12 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
         setting: 'quantize / quantize_te',
         current: `quantize=${!!model?.quantize}, quantize_te=${!!model?.quantize_te}`,
         recommended: wantQuant ? 'both on (float8 / uint4)' : 'add RAM',
+        fix: wantQuant
+          ? [
+              { path: 'config.process[0].model.quantize', value: true },
+              { path: 'config.process[0].model.quantize_te', value: true },
+            ]
+          : undefined,
       });
     } else if (weightsFull > ramBudget && (!model?.quantize || !model?.quantize_te)) {
       // Fits once quantized, but the unquantized *load transient* may not.
@@ -143,6 +159,10 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
         setting: 'quantize / quantize_te',
         current: `quantize=${!!model?.quantize}, quantize_te=${!!model?.quantize_te}`,
         recommended: 'both on',
+        fix: [
+          { path: 'config.process[0].model.quantize', value: true },
+          { path: 'config.process[0].model.quantize_te', value: true },
+        ],
       });
     }
   }
@@ -169,6 +189,7 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
         setting: 'low_vram / layer_offloading',
         current: `low_vram=${lowVram}, layer_offloading=${offloading}`,
         recommended: 'enable at least one',
+        fix: [{ path: 'config.process[0].model.low_vram', value: true }],
       });
     } else if (vramNeed > vramBudget) {
       findings.push({
@@ -192,6 +213,10 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
       setting: 'model.quantize',
       current: 'false',
       recommended: 'true (qfloat8)',
+      fix: [
+        { path: 'config.process[0].model.quantize', value: true },
+        { path: 'config.process[0].model.qtype', value: 'qfloat8' },
+      ],
     });
   }
 
@@ -263,6 +288,7 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
       setting: 'save.save_every',
       current: String(saveEvery),
       recommended: `≤ ${Math.max(1, Math.floor(steps / 4))}`,
+      fix: [{ path: 'config.process[0].save.save_every', value: Math.max(1, Math.floor(steps / 4)) }],
     });
   }
 

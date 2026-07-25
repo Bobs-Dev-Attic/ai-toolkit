@@ -139,6 +139,7 @@ export function reviewTrainingConfig(
           setting: 'train.lr',
           current: fmtLr(lr),
           recommended: '1e-4',
+          fix: [{ path: 'config.process[0].train.lr', value: 1e-4 }],
         });
       } else if (lr < 2e-5) {
         findings.push({
@@ -149,6 +150,7 @@ export function reviewTrainingConfig(
           setting: 'train.lr',
           current: fmtLr(lr),
           recommended: '1e-4',
+          fix: [{ path: 'config.process[0].train.lr', value: 1e-4 }],
         });
       } else if (lr >= 1e-4 && transformerIsLarge(arch)) {
         findings.push({
@@ -161,6 +163,7 @@ export function reviewTrainingConfig(
           setting: 'train.lr',
           current: fmtLr(lr),
           recommended: '5e-5',
+          fix: [{ path: 'config.process[0].train.lr', value: 5e-5 }],
         });
       }
     } else {
@@ -176,6 +179,7 @@ export function reviewTrainingConfig(
           setting: 'train.lr',
           current: fmtLr(lr),
           recommended: '1e-5',
+          fix: [{ path: 'config.process[0].train.lr', value: 1e-5 }],
         });
       }
     }
@@ -200,6 +204,7 @@ export function reviewTrainingConfig(
         setting: 'network.linear_alpha',
         current: String(alpha),
         recommended: `= rank (${rank})`,
+        fix: [{ path: 'config.process[0].network.linear_alpha', value: rank }],
       });
     }
   }
@@ -217,6 +222,15 @@ export function reviewTrainingConfig(
       .slice(0, 3)
       .map(r => `${r}→${Math.floor(r / div) * div}`)
       .join(', ');
+    // Fix: round each affected dataset's resolution array down to the nearest
+    // multiple of div (deduped, preserving order).
+    const resFix = datasets
+      .map((d, i) => ({ i, res: d.resolution ?? [] }))
+      .filter(({ res }) => res.some(r => r % div !== 0))
+      .map(({ i, res }) => ({
+        path: `config.process[0].datasets[${i}].resolution`,
+        value: [...new Set(res.map(r => Math.floor(r / div) * div))],
+      }));
     findings.push({
       id: 'res-divis',
       level: 'warning',
@@ -227,6 +241,7 @@ export function reviewTrainingConfig(
       setting: 'datasets[].resolution',
       current: [...badRes].join(', '),
       recommended: `multiples of ${div}`,
+      fix: resFix,
     });
   }
 
@@ -256,11 +271,11 @@ export function reviewTrainingConfig(
   // ---- Caption dropout vs trigger -------------------------------------
   // If the default caption IS the trigger and dropout is high, the trigger is
   // omitted from that fraction of steps, weakening the association.
-  const highDropout = datasets.find(
+  const highDropoutIdx = datasets.findIndex(
     d => (d.caption_dropout_rate ?? 0) >= 0.2 && (d.default_caption ?? '').trim() === (trigger ?? '').trim() && !!trigger,
   );
-  if (highDropout) {
-    const rate = highDropout.caption_dropout_rate;
+  if (highDropoutIdx >= 0) {
+    const rate = datasets[highDropoutIdx].caption_dropout_rate;
     findings.push({
       id: 'caption-dropout',
       level: 'info',
@@ -271,6 +286,7 @@ export function reviewTrainingConfig(
       setting: 'datasets[].caption_dropout_rate',
       current: String(rate),
       recommended: '≤ 0.1 for likeness',
+      fix: [{ path: `config.process[0].datasets[${highDropoutIdx}].caption_dropout_rate`, value: 0.1 }],
     });
   }
 
@@ -304,6 +320,7 @@ export function reviewTrainingConfig(
           setting: 'model.quantize',
           current: `true (${model?.qtype ?? 'qfloat8'})`,
           recommended: 'try false (bf16) with offloading',
+          fix: [{ path: 'config.process[0].model.quantize', value: false }],
         });
       }
     }

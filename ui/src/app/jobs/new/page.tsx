@@ -548,6 +548,16 @@ export default function TrainingForm() {
           saveJob(false);
         }}
         onCancel={() => setPreflightOpen(false)}
+        onApplyFixes={fixes => {
+          // Apply each suggestion's path/value into the job config in one update.
+          setJobConfig((prev: JobConfig) => {
+            let updated = prev;
+            for (const fix of fixes) {
+              updated = setNestedValue(updated, fix.value, fix.path);
+            }
+            return updated;
+          });
+        }}
       />
     </>
   );

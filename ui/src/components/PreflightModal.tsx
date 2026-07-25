@@ -4,15 +4,18 @@ import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import { useEffect, useState } from 'react';
 import { JobConfig } from '@/types';
 import { apiClient } from '@/utils/api';
-import { analyzePreflight, Finding, FindingLevel, PreflightHardware } from '@/utils/preflight';
+import { analyzePreflight, Finding, FindingFix, FindingLevel, PreflightHardware } from '@/utils/preflight';
 import { reviewTrainingConfig } from '@/utils/configReview';
-import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive } from 'react-icons/lu';
+import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive, LuWandSparkles } from 'react-icons/lu';
 
 interface Props {
   open: boolean;
   jobConfig: JobConfig | null;
   onConfirm: () => void;
   onCancel: () => void;
+  // Apply selected suggestions back to the job form. Given a flat list of
+  // path/value changes to write. Optional — without it, findings are advisory only.
+  onApplyFixes?: (fixes: FindingFix[]) => void;
 }
 
 const levelMeta: Record<FindingLevel, { icon: React.ReactNode; ring: string; text: string; label: string }> = {
@@ -22,17 +25,24 @@ const levelMeta: Record<FindingLevel, { icon: React.ReactNode; ring: string; tex
   ok: { icon: <LuCircleCheck />, ring: 'border-emerald-500/40 bg-emerald-500/5', text: 'text-emerald-400', label: 'OK' },
 };
 
-export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }: Props) {
+export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, onApplyFixes }: Props) {
   const [loading, setLoading] = useState(false);
   const [hw, setHw] = useState<PreflightHardware | null>(null);
+  const [imageCount, setImageCount] = useState<number | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // ids of fixable findings the user has ticked to apply
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // Fetch hardware + dataset image counts once when the modal opens. Kept
+  // separate from analysis so applying a fix (which changes jobConfig) re-runs
+  // the cheap analysis without re-hitting the hardware/stats endpoints.
   useEffect(() => {
     if (!open || !jobConfig) return;
     let cancelled = false;
     setLoading(true);
     setErr(null);
+    setSelected(new Set());
 
     Promise.all([
       apiClient.get('/api/gpu').then(r => r.data).catch(() => null),
@@ -59,7 +69,7 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
         // Sum real image counts for the job's datasets by matching folder
         // basenames against /api/datasets/stats. null if stats unavailable, so
         // the steps-per-image check is skipped rather than guessed.
-        let imageCount: number | null = null;
+        let count: number | null = null;
         const statList: { name: string; image_count: number }[] = dsStats?.datasets ?? [];
         if (statList.length > 0) {
           const byName = new Map(statList.map(s => [s.name, s.image_count]));
@@ -73,13 +83,9 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
               matched += 1;
             }
           }
-          if (matched > 0) imageCount = sum;
+          if (matched > 0) count = sum;
         }
-
-        const order: Record<FindingLevel, number> = { error: 0, warning: 1, info: 2, ok: 3 };
-        const merged = [...analyzePreflight(jobConfig, hardware), ...reviewTrainingConfig(jobConfig, imageCount, hardware)];
-        merged.sort((a, b) => order[a.level] - order[b.level]);
-        setFindings(merged);
+        setImageCount(count);
       })
       .catch(e => {
         if (!cancelled) setErr(String(e));
@@ -92,6 +98,37 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
       cancelled = true;
     };
   }, [open, jobConfig]);
+
+  // Recompute findings whenever the config, hardware, or image count changes.
+  // After an apply, jobConfig updates and this re-runs — resolved findings drop
+  // off automatically, so the list reflects the new state.
+  useEffect(() => {
+    if (!open || !jobConfig || !hw) return;
+    const order: Record<FindingLevel, number> = { error: 0, warning: 1, info: 2, ok: 3 };
+    const merged = [...analyzePreflight(jobConfig, hw), ...reviewTrainingConfig(jobConfig, imageCount, hw)];
+    merged.sort((a, b) => order[a.level] - order[b.level]);
+    setFindings(merged);
+    // prune selections whose finding no longer exists
+    setSelected(prev => {
+      const ids = new Set(merged.map(f => f.id));
+      const next = new Set([...prev].filter(id => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [open, jobConfig, hw, imageCount]);
+
+  const fixable = findings.filter(f => f.fix && f.fix.length > 0);
+  const toggle = (id: string) =>
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  const applySelected = () => {
+    if (!onApplyFixes) return;
+    const fixes = fixable.filter(f => selected.has(f.id)).flatMap(f => f.fix ?? []);
+    if (fixes.length > 0) onApplyFixes(fixes);
+    // selection is pruned by the recompute effect once jobConfig updates
+  };
 
   const errorCount = findings.filter(f => f.level === 'error').length;
   const warnCount = findings.filter(f => f.level === 'warning').length;
@@ -141,14 +178,27 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
             {!loading &&
               findings.map(f => {
                 const meta = levelMeta[f.level];
+                const canFix = !!onApplyFixes && !!f.fix && f.fix.length > 0;
+                const isSel = selected.has(f.id);
                 return (
-                  <div key={f.id} className={`rounded-lg border p-3 ${meta.ring}`}>
+                  <div key={f.id} className={`rounded-lg border p-3 ${meta.ring} ${canFix && isSel ? 'ring-1 ring-emerald-500/50' : ''}`}>
                     <div className="flex items-start gap-2">
-                      <span className={`mt-0.5 ${meta.text}`}>{meta.icon}</span>
+                      {canFix ? (
+                        <input
+                          type="checkbox"
+                          checked={isSel}
+                          onChange={() => toggle(f.id)}
+                          className="mt-1 accent-emerald-500 cursor-pointer"
+                          title="Select this suggestion to apply"
+                        />
+                      ) : (
+                        <span className={`mt-0.5 ${meta.text}`}>{meta.icon}</span>
+                      )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className={`text-xs uppercase tracking-wide ${meta.text}`}>{meta.label}</span>
                           <span className="text-gray-100 text-sm font-medium">{f.title}</span>
+                          {canFix && <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">applyable</span>}
                         </div>
                         <p className="text-sm text-gray-300 mt-1 leading-relaxed">{f.detail}</p>
                         {(f.setting || f.current || f.recommended) && (
@@ -176,6 +226,34 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
                 );
               })}
           </div>
+
+          {/* Apply-suggestions bar (only when there are applyable findings) */}
+          {!loading && onApplyFixes && fixable.length > 0 && (
+            <div className="px-5 py-2.5 border-t border-gray-800 shrink-0 flex items-center justify-between gap-3 bg-gray-900/60">
+              <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="accent-emerald-500 cursor-pointer"
+                  checked={selected.size === fixable.length && fixable.length > 0}
+                  ref={el => {
+                    if (el) el.indeterminate = selected.size > 0 && selected.size < fixable.length;
+                  }}
+                  onChange={() =>
+                    setSelected(prev => (prev.size === fixable.length ? new Set() : new Set(fixable.map(f => f.id))))
+                  }
+                />
+                Select all applyable ({fixable.length})
+              </label>
+              <button
+                type="button"
+                onClick={applySelected}
+                disabled={selected.size === 0}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <LuWandSparkles /> Apply {selected.size > 0 ? selected.size : ''} selected
+              </button>
+            </div>
+          )}
 
           {/* Actions */}
           <div className="px-5 py-4 border-t border-gray-800 shrink-0 flex items-center justify-between gap-3">
