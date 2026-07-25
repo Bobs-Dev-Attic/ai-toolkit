@@ -812,6 +812,11 @@ CONFIG_PRESETS['ideogram4'] = GENERIC_IMAGE_PRESETS;
 CONFIG_PRESETS['prx_pixel'] = GENERIC_IMAGE_PRESETS;
 CONFIG_PRESETS['boogu_image'] = GENERIC_IMAGE_PRESETS;
 CONFIG_PRESETS['boogu_image_edit'] = GENERIC_IMAGE_PRESETS;
+// Krea 2 variants (turbo/edit) differ by training adapter, not VRAM class, so
+// they share the base krea2 tiers.
+CONFIG_PRESETS['krea2:turbo'] = CONFIG_PRESETS.krea2;
+CONFIG_PRESETS['krea2:o_edit'] = CONFIG_PRESETS.krea2;
+CONFIG_PRESETS['krea2:o_edit_turbo'] = CONFIG_PRESETS.krea2;
 
 // ─────────────────────────────────────────────────────────────────────
 // Generic audio-model presets — starting points for ACE-Step etc. Audio

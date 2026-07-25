@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/server/prisma';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
-const prisma = new PrismaClient();
+const execAsync = promisify(exec);
 const isWindows = process.platform === 'win32';
 
 export async function GET(request: NextRequest, { params }: { params: { jobID: string } }) {
@@ -15,59 +17,40 @@ export async function GET(request: NextRequest, { params }: { params: { jobID: s
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });
   }
 
-  // Mark the job as stopping. The frontend modal polls /api/jobs?id=<id> and
-  // will see this update almost immediately, before the kill below completes.
   await prisma.job.update({
     where: { id: jobID },
     data: {
       stop: true,
-      info: job.pid != null
-        ? `Stopping... sending termination signal to PID ${job.pid}`
-        : 'Stopping... (no PID tracked)',
+      info: 'Stopping job...',
     },
   });
 
+  // Send SIGINT to the process if we have a PID
   if (job.pid != null) {
     console.log(`Attempting to stop job ${jobID} with PID ${job.pid}`);
     try {
       if (isWindows) {
-        const { execSync } = require('child_process');
-        // /T = kill the whole process tree, /F = force. This is the slow
-        // step on Windows (often 1–5 seconds while child processes flush).
-        execSync(`taskkill /PID ${job.pid} /T /F`, { stdio: 'ignore' });
+        // Windows doesn't support SIGINT for arbitrary processes.
+        // Use taskkill with /T (tree) to send a CTRL+C-like termination.
+        await execAsync(`taskkill /PID ${job.pid} /T /F`, { windowsHide: true });
       } else {
         process.kill(job.pid, 'SIGINT');
       }
+      // if it killed it, mark it stopped in the database
       await prisma.job.update({
         where: { id: jobID },
         data: {
           status: 'stopped',
-          info: 'Job stopped successfully.',
+          info: 'Job stopped',
         },
       });
-    } catch (e: any) {
-      // Process may have already exited — record that fact instead of
-      // swallowing it silently.
-      const msg = e?.message || String(e);
-      console.error('Error sending signal to process:', msg);
-      await prisma.job.update({
-        where: { id: jobID },
-        data: {
-          status: 'stopped',
-          info: `Process already gone or kill failed: ${msg}`,
-        },
-      });
+    } catch (e) {
+      // Process may have already exited — that's fine
+      console.error('Error sending signal to process:', e);
     }
   } else {
-    await prisma.job.update({
-      where: { id: jobID },
-      data: {
-        status: 'stopped',
-        info: 'No PID was tracked. Marked as stopped.',
-      },
-    });
+    console.warn(`No PID found for job ${jobID}, cannot send stop signal`);
   }
 
-  const updated = await prisma.job.findUnique({ where: { id: jobID } });
-  return NextResponse.json(updated);
+  return NextResponse.json(job);
 }

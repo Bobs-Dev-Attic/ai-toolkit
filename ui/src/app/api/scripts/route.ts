@@ -16,7 +16,7 @@ const UI_SCRIPTS_ROOT = path.join(TOOLKIT_ROOT, 'ui_scripts');
 // Only allow flat script names (no path separators, no traversal).
 const SCRIPT_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\.py$/;
 
-const resolveScriptPath = (rawName: unknown): string | null => {
+const resolveScriptPath = async (rawName: unknown): Promise<string | null> => {
   if (typeof rawName !== 'string') return null;
   const name = rawName.trim();
   if (!SCRIPT_NAME_RE.test(name)) return null;
@@ -24,7 +24,11 @@ const resolveScriptPath = (rawName: unknown): string | null => {
   const target = path.resolve(UI_SCRIPTS_ROOT, name);
   const rootWithSep = UI_SCRIPTS_ROOT.endsWith(path.sep) ? UI_SCRIPTS_ROOT : UI_SCRIPTS_ROOT + path.sep;
   if (!target.startsWith(rootWithSep)) return null;
-  if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return null;
+  try {
+    if (!(await fs.promises.stat(target)).isFile()) return null;
+  } catch {
+    return null;
+  }
   return target;
 };
 
@@ -227,7 +231,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const scriptPath = resolveScriptPath(body?.script);
+  const scriptPath = await resolveScriptPath(body?.script);
   if (!scriptPath) {
     return NextResponse.json(
       { error: 'Invalid or unknown script. Must be a *.py file inside ui_scripts/.' },

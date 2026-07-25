@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/server/prisma';
 import { isMac } from '@/helpers/basic';
-
-const prisma = new PrismaClient();
+import { cached } from '@/server/apiCache';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -10,6 +9,7 @@ export async function GET(request: Request) {
   const job_ref = searchParams.get('job_ref');
   const job_type = searchParams.get('job_type');
   const status = searchParams.get('status');
+  const only_active = searchParams.get('only_active');
 
   try {
     if (id) {
@@ -27,7 +27,10 @@ export async function GET(request: Request) {
     }
 
     const where: any = {};
-    if (job_type) where.job_type = job_type;
+    if (job_type) {
+      where.job_type = job_type;
+    }
+    // status filter with comma-separated support (local-enhancements)
     if (status) {
       if (status.includes(',')) {
         where.status = { in: status.split(',').map(s => s.trim()).filter(Boolean) };
@@ -35,9 +38,24 @@ export async function GET(request: Request) {
         where.status = status;
       }
     }
+    // only_active fast path with caching (upstream)
+    if (only_active === 'true') {
+      where.status = { in: ['running', 'queued', 'stopping'] };
+      const jobs = await cached(
+        'jobs-active',
+        () =>
+          prisma.job.findMany({
+            where,
+            orderBy: { created_at: 'desc' },
+          }),
+        5000,
+        { job_type },
+      );
+      return NextResponse.json({ jobs: jobs });
+    }
 
     const jobs = await prisma.job.findMany({
-      where: Object.keys(where).length > 0 ? where : undefined,
+      where,
       orderBy: { created_at: 'desc' },
     });
     return NextResponse.json({ jobs: jobs });
@@ -54,15 +72,15 @@ export async function POST(request: Request) {
     let gpu_ids: string = body.gpu_ids;
 
     if (isMac()) {
-      gpu_ids = "mps";
+      gpu_ids = 'mps';
     }
 
     const extra: any = {};
-    if ("job_ref" in body) {
-      extra["job_ref"] = body.job_ref;
+    if ('job_ref' in body) {
+      extra['job_ref'] = body.job_ref;
     }
-    if ("job_type" in body) {
-      extra["job_type"] = body.job_type;
+    if ('job_type' in body) {
+      extra['job_type'] = body.job_type;
     }
 
     if (id) {
