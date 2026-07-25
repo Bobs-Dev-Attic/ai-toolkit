@@ -164,21 +164,21 @@ export const CONFIG_PRESETS: Record<string, ConfigPreset[]> = {
   // ───────────────────────────────────────────────────────────────────
   // Krea 2 (12.8B transformer + Qwen3-VL-4B TE, Qwen-Image VAE)
   //
-  // SYSTEM RAM is the binding constraint here, not VRAM. ai-toolkit loads the
-  // full bf16 transformer (~25.6 GB) into CPU RAM before quantizing it, so a
-  // 32 GB machine cannot load this model at all regardless of which preset is
-  // chosen — the preflight check reports this as `ram-weights`. 64 GB of RAM is
-  // the practical floor until the load path quantizes shard-by-shard.
-  //
-  // The approxVramGB figures below assume the model has loaded successfully.
-  // Note there is no accuracy recovery adapter for Krea 2, so unlike Qwen-Image
-  // there is no usable uint3 tier.
+  // Two memory dimensions matter and the pre-flight check reads BOTH live from
+  // this machine, so it adapts to whatever RAM/VRAM is installed:
+  //   * VRAM  — the training constraint; FP8 + offloading below are for this.
+  //   * System RAM — holds the weights during load, and (with layer offloading)
+  //     holds the offloaded transformer during training. More RAM means you can
+  //     offload aggressively, or drop transformer quantization for quality
+  //     (see the hardware-aware note in the pre-flight review).
+  // The approxVramGB figures assume the model has loaded. There is no accuracy
+  // recovery adapter for Krea 2, so unlike Qwen-Image there is no uint3 tier.
   // ───────────────────────────────────────────────────────────────────
   krea2: [
     {
       id: 'krea2-memory',
       label: 'Memory',
-      description: '14–18 GB VRAM. FP8 both + layer offload. Needs 64 GB system RAM.',
+      description: '14–18 GB VRAM. FP8 both + layer offload. For tight VRAM.',
       approxVramGB: 16,
       tier: 'memory',
       overrides: {

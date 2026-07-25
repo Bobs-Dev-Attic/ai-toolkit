@@ -1,5 +1,5 @@
 import { JobConfig } from '@/types';
-import { Finding } from './preflight';
+import { Finding, PreflightHardware, archSize } from './preflight';
 
 // ---------------------------------------------------------------------------
 // Stage A: rules-based training-config review.
@@ -58,8 +58,15 @@ function fmtLr(lr: number): string {
  *                     num_repeats), or null if it could not be counted. When
  *                     null, the steps-per-image check is skipped rather than
  *                     guessed.
+ * @param hardware     detected machine (RAM/VRAM), or null. When provided, adds
+ *                     hardware-aware findings that cross-reference the config
+ *                     against what this machine can afford.
  */
-export function reviewTrainingConfig(job: JobConfig, imageCount: number | null): Finding[] {
+export function reviewTrainingConfig(
+  job: JobConfig,
+  imageCount: number | null,
+  hardware: PreflightHardware | null = null,
+): Finding[] {
   const findings: Finding[] = [];
   const process = job?.config?.process?.[0];
   if (!process) return findings;
@@ -265,6 +272,49 @@ export function reviewTrainingConfig(job: JobConfig, imageCount: number | null):
       current: String(rate),
       recommended: '≤ 0.1 for likeness',
     });
+  }
+
+  // ---- Hardware-aware: quality headroom -------------------------------
+  // preflight.ts flags when settings WON'T fit. This is the opposite
+  // direction: when the machine has enough headroom to RELAX a
+  // memory-saving setting for better quality. Only fires with hardware.
+  if (hardware) {
+    const ramGB = hardware.ramTotalMB / 1024;
+    const vramGB = hardware.gpus?.[0] ? hardware.gpus[0].memTotalMB / 1024 : 0;
+    const size = archSize(arch);
+    const bf16Weights = size.transformerGB + size.teGB; // full-precision load footprint
+    const offloading = !!model?.layer_offloading;
+    const large = transformerIsLarge(arch);
+
+    // Large model, transformer quantized, but RAM is ample and offloading is on
+    // (so the transformer lives in CPU RAM, not VRAM). With enough RAM the
+    // quality cost of quantizing the transformer is optional.
+    if (large && model?.quantize && offloading && ramGB > 0) {
+      const ramHeadroom = ramGB * 0.85;
+      if (bf16Weights < ramHeadroom) {
+        findings.push({
+          id: 'hw-quant-headroom',
+          level: 'info',
+          title: 'RAM headroom — bf16 transformer is an option',
+          detail:
+            `This machine has ~${ramGB.toFixed(0)} GB RAM, comfortably more than ${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights, ` +
+            `and layer offloading is on (so the transformer sits in CPU RAM, not VRAM). ` +
+            `Transformer quantization is therefore trading quality for memory you may not need — try quantize off (bf16) for higher-fidelity training. ` +
+            `Keep text-encoder quantization if VRAM (~${vramGB.toFixed(0)} GB) is tight during the encode pass.`,
+          setting: 'model.quantize',
+          current: `true (${model?.qtype ?? 'qfloat8'})`,
+          recommended: 'try false (bf16) with offloading',
+        });
+      }
+    }
+
+    // NOTE: deliberately NOT suggesting "disable offloading to go faster" from a
+    // static VRAM estimate. Real telemetry (the Melissa krea2 run) peaked at 98%
+    // VRAM *with* offloading already on, so a naive "the transformer fits, drop
+    // offloading" rule would cause an OOM. Whether offloading can be relaxed is
+    // decided from measured peak VRAM in the run post-mortem (runAnalysis.ts),
+    // not guessed here.
+    void vramGB;
   }
 
   return findings;

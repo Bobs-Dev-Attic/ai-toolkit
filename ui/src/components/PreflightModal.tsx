@@ -77,7 +77,7 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel }:
         }
 
         const order: Record<FindingLevel, number> = { error: 0, warning: 1, info: 2, ok: 3 };
-        const merged = [...analyzePreflight(jobConfig, hardware), ...reviewTrainingConfig(jobConfig, imageCount)];
+        const merged = [...analyzePreflight(jobConfig, hardware), ...reviewTrainingConfig(jobConfig, imageCount, hardware)];
         merged.sort((a, b) => order[a.level] - order[b.level]);
         setFindings(merged);
       })

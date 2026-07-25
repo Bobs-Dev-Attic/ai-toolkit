@@ -29,13 +29,13 @@ export interface Finding {
 // deliberately approximate — they exist to catch "won't fit" situations, not to
 // be exact. transformer = denoiser; te = text encoder(s).
 // ---------------------------------------------------------------------------
-interface ArchSize {
+export interface ArchSize {
   transformerGB: number;
   teGB: number;
   label: string;
 }
 
-function archSize(arch: string): ArchSize {
+export function archSize(arch: string): ArchSize {
   const a = (arch || '').toLowerCase();
   // order matters: match most specific first
   // 12.9B transformer (~26GB bf16) + Qwen3-VL-4B text encoder (~8GB)
