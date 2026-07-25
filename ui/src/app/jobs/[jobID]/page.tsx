@@ -2,7 +2,7 @@
 
 import { useState, useEffect, use } from 'react';
 import { FaChevronLeft } from 'react-icons/fa';
-import { MdDashboard, MdImage, MdShowChart, MdCode, MdExtension, MdMemory } from 'react-icons/md';
+import { MdDashboard, MdImage, MdShowChart, MdCode, MdExtension, MdMemory, MdInsights } from 'react-icons/md';
 import { Button } from '@headlessui/react';
 import { TopBar, MainContent } from '@/components/layout';
 import useJob from '@/hooks/useJob';
@@ -13,12 +13,13 @@ import JobActionBar from '@/components/JobActionBar';
 import JobConfigViewer from '@/components/JobConfigViewer';
 import JobLossGraph from '@/components/JobLossGraph';
 import JobSystemStats from '@/components/JobSystemStats';
+import JobAnalysis from '@/components/JobAnalysis';
 import JobPlugin from '@/components/JobPlugin';
 import { Job } from '@prisma/client';
 import { apiClient } from '@/utils/api';
 import { isSamplingEnabled } from '@/utils/jobs';
 
-type PageKey = 'overview' | 'samples' | 'config' | 'loss_log' | 'system_stats' | 'plugin';
+type PageKey = 'overview' | 'samples' | 'analysis' | 'config' | 'loss_log' | 'system_stats' | 'plugin';
 
 interface Page {
   name: string;
@@ -45,6 +46,14 @@ const pages: Page[] = [
     component: SampleImages,
     menuItem: SampleImagesMenu,
     mainCss: 'pt-24',
+    jobTypes: ['train'],
+  },
+  {
+    name: 'Analysis',
+    value: 'analysis',
+    icon: MdInsights,
+    component: JobAnalysis,
+    mainCss: 'pt-24 pb-8',
     jobTypes: ['train'],
   },
   {
