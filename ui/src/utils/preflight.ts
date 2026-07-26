@@ -264,6 +264,44 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
         recommended: hw.diskFreeGB < needGB * 0.5 ? 'free disk space' : `lower to ${Math.max(1, Math.floor(hw.diskFreeGB / perSaveGB) - 1)}`,
       });
     }
+
+    // Latent cache location, disk side. Mirror of configReview's
+    // hw-latent-cache-ram (which fires when RAM has headroom): here we warn from
+    // the disk angle — an on-disk latent cache competes with checkpoints for the
+    // training drive. When disk is not comfortable and RAM can hold the
+    // (offloaded) weights plus the cache, suggest caching latents in RAM instead;
+    // otherwise just flag the space pressure.
+    const diskCachedIdx = datasets
+      .map((d, i) => ({ d, i }))
+      .filter(({ d }) => d.cache_latents_to_disk);
+    if (diskCachedIdx.length > 0) {
+      const diskComfortable = hw.diskFreeGB > needGB * 2 && hw.diskFreeGB > 20;
+      if (!diskComfortable) {
+        const ramBudget = ramGB * 0.85;
+        // Room in RAM for the full-precision weights plus a latent cache, with slack.
+        const ramHasRoom = ramGB > 0 && weightsFull + 6 < ramBudget;
+        findings.push({
+          id: 'latent-cache-disk',
+          level: hw.diskFreeGB < needGB ? 'warning' : 'info',
+          title: 'Latent cache is on disk',
+          detail:
+            `${diskCachedIdx.length} dataset(s) cache latents to disk, writing them to the training drive alongside checkpoints, ` +
+            `and only ${fmtGB(hw.diskFreeGB)} is free. ` +
+            (ramHasRoom
+              ? `This machine has ~${fmtGB(ramGB)} RAM — comfortably more than ${size.label}'s ~${fmtGB(weightsFull)} of weights — so you can cache latents in RAM instead, which frees the drive and skips the per-epoch disk round-trip.`
+              : `Free up disk space, or lower how many checkpoints you keep.`),
+          setting: 'datasets[].cache_latents_to_disk',
+          current: 'true',
+          recommended: ramHasRoom ? 'false (cache in RAM)' : 'free disk space',
+          fix: ramHasRoom
+            ? diskCachedIdx.map(({ i }) => ({
+                path: `config.process[0].datasets[${i}].cache_latents_to_disk`,
+                value: false,
+              }))
+            : undefined,
+        });
+      }
+    }
   }
 
   // ---- Dataset sanity ----
