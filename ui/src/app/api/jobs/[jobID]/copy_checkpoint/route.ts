@@ -70,9 +70,21 @@ export async function POST(request: NextRequest, { params }: { params: { jobID: 
   }
 
   const from = path.join(jobFolder, latest);
-  const to = path.join(dest, latest);
   try {
     await fs.promises.mkdir(dest, { recursive: true });
+    let to = path.join(dest, latest);
+    // Never overwrite: on a name collision, insert a timestamp before the ext.
+    try {
+      await fs.promises.access(to);
+      const ext = path.extname(latest);
+      const stem = path.basename(latest, ext);
+      const d = new Date();
+      const p = (n: number) => String(n).padStart(2, '0');
+      const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      to = path.join(dest, `${stem}_${stamp}${ext}`);
+    } catch {
+      // no existing file at that name — use it as-is
+    }
     await fs.promises.copyFile(from, to);
     return NextResponse.json({ ok: true, from, to });
   } catch (err: any) {

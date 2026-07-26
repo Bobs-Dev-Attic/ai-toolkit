@@ -381,7 +381,14 @@ class DiffusionTrainer(SDTrainer):
             # Highest training step wins; mtime breaks ties / unparseable names.
             latest = max(candidates, key=lambda p: (_step_of(p), os.path.getmtime(p)))
             os.makedirs(dest, exist_ok=True)
-            dest_path = os.path.join(dest, os.path.basename(latest))
+            base = os.path.basename(latest)
+            dest_path = os.path.join(dest, base)
+            # Never overwrite: on a name collision, append a timestamp.
+            if os.path.exists(dest_path):
+                import datetime as _dt
+                stem, ext = os.path.splitext(base)
+                stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+                dest_path = os.path.join(dest, f"{stem}_{stamp}{ext}")
             _shutil.copy2(latest, dest_path)
             print_acc(f"[AITK] Copied final checkpoint to {dest_path}")
         except Exception as e:

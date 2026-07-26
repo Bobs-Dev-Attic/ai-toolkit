@@ -16,7 +16,7 @@ const RAW: Record<string, string> = {
   'gpu id':
     'GPU index to run training on. Only one GPU per job from the UI; start multiple jobs in parallel for multi-GPU. On Mac this auto-routes to MPS.',
   'trigger word':
-    'Optional. A token that activates your concept at inference. Auto-prepended to captions that don\'t already contain it. Use [trigger] inside a caption to control where it appears.',
+    'Optional. A token that activates your concept at inference. Prefer a single, uncommon token (e.g. "melm") over a hyphenated name ("melissa-mollet"), which splits into several weak sub-tokens and binds the subject less strongly. Auto-prepended to captions that don\'t already contain it, but NOT to sample prompts — so your sample prompts must include it (or [trigger]) or the samples won\'t show the trained subject. Use [trigger] inside a caption to control where it appears.',
 
   // ───── Model card ─────
   'model architecture':
