@@ -266,6 +266,42 @@ export function reviewTrainingConfig(
         recommended: 'a single uncommon token',
       });
     }
+
+    // ---- Trigger missing from sample prompts -------------------------
+    // The subject is bound to the trigger token during training, but the
+    // trainer injects it into a sample prompt ONLY where a [trigger]/[name]
+    // placeholder exists (inject_trigger_into_prompt add_if_not_present=False).
+    // A prompt with neither the placeholder nor the literal trigger samples a
+    // generic subject — so likeness "doesn't work" even when the LoRA is fine.
+    // This is the single most common reason trained samples look nothing like
+    // the dataset, so it is a warning, not an info.
+    const samplingOn = !train?.disable_sampling;
+    const promptStrings: string[] = [
+      ...((process.sample?.samples ?? []).map(s => s?.prompt ?? '')),
+      ...((process.sample?.prompts ?? []) as string[]),
+    ].filter(p => typeof p === 'string' && p.trim() !== '');
+    if (samplingOn && promptStrings.length > 0) {
+      const tl = t.toLowerCase();
+      const carriesTrigger = (p: string) => {
+        const pl = p.toLowerCase();
+        return pl.includes(tl) || pl.includes('[trigger]') || pl.includes('[name]');
+      };
+      const withTrigger = promptStrings.filter(carriesTrigger).length;
+      if (withTrigger === 0) {
+        findings.push({
+          id: 'trigger-missing-in-samples',
+          level: 'warning',
+          title: 'Sample prompts never use the trigger word',
+          detail:
+            `The trigger "${t}" binds the subject during training, but none of your ${promptStrings.length} sample prompt(s) contain it or a [trigger] placeholder. ` +
+            `The trainer does not add the trigger automatically, so every sample renders a generic subject and will not resemble the dataset — ` +
+            `even when the LoRA trained correctly. Add "${t}" (or [trigger]) to each sample prompt.`,
+          setting: 'sample.samples[].prompt',
+          current: `0 of ${promptStrings.length} prompts include the trigger`,
+          recommended: 'add the trigger / [trigger] to each prompt',
+        });
+      }
+    }
   }
 
   // ---- Caption dropout vs trigger -------------------------------------
