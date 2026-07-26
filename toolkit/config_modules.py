@@ -31,6 +31,9 @@ class SaveConfig:
         self.push_to_hub: bool = kwargs.get("push_to_hub", False)
         self.hf_repo_id: Optional[str] = kwargs.get("hf_repo_id", None)
         self.hf_private: Optional[str] = kwargs.get("hf_private", False)
+        # Optional folder to copy the final (highest-step) .safetensors into once
+        # training completes. None/empty disables it.
+        self.copy_final_to: Optional[str] = kwargs.get("copy_final_to", None)
 
 class LoggingConfig:
     def __init__(self, **kwargs):

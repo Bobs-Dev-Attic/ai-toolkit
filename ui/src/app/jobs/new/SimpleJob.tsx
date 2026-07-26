@@ -72,6 +72,8 @@ export default function SimpleJob({
   const { settings: appSettings, setSettings: setAppSettings } = useSettings();
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Separate browser instance for the "copy final checkpoint to" folder.
+  const [copyDestBrowseOpen, setCopyDestBrowseOpen] = useState(false);
   // Basename of the dataset whose gallery is open, or null when closed.
   const [galleryDataset, setGalleryDataset] = useState<string | null>(null);
 
@@ -723,6 +725,28 @@ export default function SimpleJob({
               min={1}
               required
             />
+            <div className="flex items-end gap-2">
+              <TextInput
+                className="flex-1 min-w-0"
+                label="Copy Final Checkpoint To"
+                value={jobConfig.config.process[0].save.copy_final_to ?? ''}
+                onChange={(value: string | null) => {
+                  if (value?.trim() === '') {
+                    value = null;
+                  }
+                  setJobConfig(value, 'config.process[0].save.copy_final_to');
+                }}
+                placeholder="optional — folder to copy the final .safetensors into on completion"
+              />
+              <button
+                type="button"
+                onClick={() => setCopyDestBrowseOpen(true)}
+                title="Browse for the destination folder"
+                className="shrink-0 h-[30px] px-2.5 flex items-center justify-center bg-gray-950 dark:bg-gray-800 border border-gray-700 rounded-sm text-gray-300 hover:text-white hover:bg-gray-700"
+              >
+                <FolderOpen className="w-4 h-4" />
+              </button>
+            </div>
           </Card>
         </div>
         <div>
@@ -2003,6 +2027,16 @@ export default function SimpleJob({
         initialPath={jobConfig.config.process[0].model.name_or_path || appSettings.MODELS_FOLDER || undefined}
         onSelect={selectedPath => {
           setJobConfig(selectedPath, 'config.process[0].model.name_or_path');
+        }}
+      />
+      <FolderBrowserModal
+        open={copyDestBrowseOpen}
+        onClose={() => setCopyDestBrowseOpen(false)}
+        initialPath={
+          jobConfig.config.process[0].save.copy_final_to || appSettings.MODELS_FOLDER || undefined
+        }
+        onSelect={selectedPath => {
+          setJobConfig(selectedPath, 'config.process[0].save.copy_final_to');
         }}
       />
       <DatasetGalleryModal open={galleryDataset != null} datasetName={galleryDataset} onClose={() => setGalleryDataset(null)} />

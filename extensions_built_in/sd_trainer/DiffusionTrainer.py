@@ -349,8 +349,49 @@ class DiffusionTrainer(SDTrainer):
             self.update_db_key(
                 "speed_string", f"{seconds_per_iter:.2f} sec/iter")
 
+    def _copy_final_checkpoint(self):
+        """Copy the highest-step .safetensors checkpoint to save_config.copy_final_to.
+
+        Config-driven and best-effort: a failure here (bad path, permissions)
+        must never turn a finished run into an error, so everything is guarded.
+        """
+        dest = getattr(self.save_config, "copy_final_to", None)
+        if dest is None or str(dest).strip() == "":
+            return
+        dest = str(dest).strip()
+        try:
+            import glob as _glob
+            import shutil as _shutil
+            import re as _re
+
+            pattern = os.path.join(self.save_root, f"{self.job.name}_*.safetensors")
+            # Exclude auxiliary safetensors (e.g. critic checkpoints) that share the folder.
+            candidates = [
+                c for c in _glob.glob(pattern)
+                if not os.path.basename(c).startswith("CRITIC_")
+            ]
+            if len(candidates) == 0:
+                print_acc(f"[AITK] copy_final_to: no checkpoint found in {self.save_root} to copy")
+                return
+
+            def _step_of(p):
+                m = _re.search(r"_(\d+)\.safetensors$", os.path.basename(p))
+                return int(m.group(1)) if m else -1
+
+            # Highest training step wins; mtime breaks ties / unparseable names.
+            latest = max(candidates, key=lambda p: (_step_of(p), os.path.getmtime(p)))
+            os.makedirs(dest, exist_ok=True)
+            dest_path = os.path.join(dest, os.path.basename(latest))
+            _shutil.copy2(latest, dest_path)
+            print_acc(f"[AITK] Copied final checkpoint to {dest_path}")
+        except Exception as e:
+            print_acc(f"[AITK] Warning: failed to copy final checkpoint to '{dest}': {e}")
+
     def done_hook(self):
         super(DiffusionTrainer, self).done_hook()
+        # Config-driven copy of the final checkpoint, on the main process only.
+        if self.accelerator.is_main_process:
+            self._copy_final_checkpoint()
         if self.is_ui_trainer:
             self.update_status("completed", "Training completed")
             # Wait for all async operations to finish before shutting down

@@ -82,6 +82,19 @@ export const sampleJobNow = (jobID: string) => {
   });
 };
 
+export const copyFinalCheckpoint = (jobID: string, dest: string) => {
+  return new Promise<{ from: string; to: string }>((resolve, reject) => {
+    apiClient
+      .post(`/api/jobs/${jobID}/copy_checkpoint`, { dest })
+      .then(res => res.data)
+      .then(data => resolve(data))
+      .catch(error => {
+        console.error('Error copying checkpoint:', error);
+        reject(error);
+      });
+  });
+};
+
 export const markJobAsStopped = (jobID: string) => {
   return new Promise<void>((resolve, reject) => {
     apiClient

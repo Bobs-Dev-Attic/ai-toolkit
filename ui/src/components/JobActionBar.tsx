@@ -1,15 +1,25 @@
 import Link from 'next/link';
 import { useState } from 'react';
-import { Eye, Trash2, Pen, Play, Pause, Cog, X, Copy, Save, OctagonX, Image } from 'lucide-react';
+import { Eye, Trash2, Pen, Play, Pause, Cog, X, Copy, Save, OctagonX, Image, FolderInput } from 'lucide-react';
 import { Button } from '@headlessui/react';
 import { openConfirm } from '@/components/ConfirmModal';
 import { Job } from '@prisma/client';
-import { startJob, stopJob, deleteJob, getAvaliableJobActions, markJobAsStopped, saveJobNow, sampleJobNow } from '@/utils/jobs';
+import {
+  startJob,
+  stopJob,
+  deleteJob,
+  getAvaliableJobActions,
+  markJobAsStopped,
+  saveJobNow,
+  sampleJobNow,
+  copyFinalCheckpoint,
+} from '@/utils/jobs';
 import { startQueue } from '@/utils/queue';
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { redirect } from 'next/navigation';
 import { openCaptionDatasetModal } from '@/components/CaptionDatasetModal';
 import StopJobModal from '@/components/StopJobModal';
+import FolderBrowserModal from '@/components/FolderBrowserModal';
 
 interface JobActionBarProps {
   job: Job;
@@ -34,6 +44,7 @@ export default function JobActionBar({
 }: JobActionBarProps) {
   const { canStart, canStop, canDelete, canEdit, canRemoveFromQueue } = getAvaliableJobActions(job);
   const [stopOpen, setStopOpen] = useState(false);
+  const [copyDestOpen, setCopyDestOpen] = useState(false);
 
   if (!afterDelete) afterDelete = onRefresh;
 
@@ -164,6 +175,17 @@ export default function JobActionBar({
               </Link>
             </MenuItem>
           )}
+          {job.job_type === 'train' && (
+            <MenuItem>
+              <div
+                className="cursor-pointer px-4 py-1 hover:bg-gray-800 rounded flex items-center gap-2"
+                onClick={() => setCopyDestOpen(true)}
+              >
+                <FolderInput className="w-4 h-4" />
+                Copy Final Checkpoint…
+              </div>
+            </MenuItem>
+          )}
           {job.job_type === 'train' && canStop && (
             <MenuItem>
               <div
@@ -215,6 +237,29 @@ export default function JobActionBar({
           </MenuItem>
         </MenuItems>
       </Menu>
+      <FolderBrowserModal
+        open={copyDestOpen}
+        onClose={() => setCopyDestOpen(false)}
+        onSelect={async folder => {
+          setCopyDestOpen(false);
+          try {
+            const res = await copyFinalCheckpoint(job.id, folder);
+            openConfirm({
+              title: 'Checkpoint Copied',
+              message: `Copied the latest checkpoint to:\n${res.to}`,
+              type: 'info',
+              confirmText: 'OK',
+            });
+          } catch (e: any) {
+            openConfirm({
+              title: 'Copy Failed',
+              message: e?.response?.data?.error || 'Failed to copy the checkpoint.',
+              type: 'warning',
+              confirmText: 'OK',
+            });
+          }
+        }}
+      />
     </div>
   );
 }

@@ -80,6 +80,9 @@ export interface SaveConfig {
   max_step_saves_to_keep: number;
   save_format: string;
   push_to_hub: boolean;
+  // When set, the highest-step .safetensors checkpoint is copied to this folder
+  // once training completes. Empty/unset disables the copy.
+  copy_final_to?: string | null;
 }
 
 export interface DatasetConfig {
