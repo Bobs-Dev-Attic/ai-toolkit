@@ -325,6 +325,56 @@ export function reviewTrainingConfig(
       }
     }
 
+    // Latent cache location. cache_latents_to_disk writes latents to disk to
+    // save RAM; with the cache held in RAM instead, training skips the per-epoch
+    // disk round-trip and data loading is faster. The latent cache is small
+    // relative to the weights, so only suggest the switch when RAM clearly has
+    // room for BOTH the (offloaded) weights and the cache, with slack.
+    const diskCached = datasets
+      .map((d, i) => ({ d, i }))
+      .filter(({ d }) => d.cache_latents_to_disk);
+    if (diskCached.length > 0 && ramGB > 0) {
+      const ramBudget = ramGB * 0.85;
+      // Coarse latent size: a 1-megapixel frame is ~0.5 MB at bf16 (16-channel,
+      // 8x VAE latent). Scale by resolution and video frame count.
+      const maxMPFrames = Math.max(
+        ...diskCached.map(({ d }) => {
+          const res = Math.max(1, ...(d.resolution ?? [1024]));
+          const mp = (res * res) / (1024 * 1024);
+          return mp * Math.max(1, d.num_frames ?? 1);
+        }),
+      );
+      const estCacheGB =
+        imageCount != null && imageCount > 0 ? (imageCount * maxMPFrames * 0.5) / 1024 : null;
+      // Require headroom for weights + cache (+ slack). When the cache size is
+      // unknown, demand generous slack rather than guess.
+      const roomForCache =
+        estCacheGB != null ? bf16Weights + estCacheGB + 4 < ramBudget : bf16Weights + 8 < ramBudget;
+      if (roomForCache) {
+        const sizeClause =
+          estCacheGB != null
+            ? `The latent cache is small (~${estCacheGB < 1 ? '<1' : estCacheGB.toFixed(1)} GB for ${imageCount} image(s)), `
+            : 'The latent cache is typically small, ';
+        findings.push({
+          id: 'hw-latent-cache-ram',
+          level: 'info',
+          title: 'RAM headroom — cache latents in RAM for faster loading',
+          detail:
+            `${diskCached.length} dataset(s) set cache_latents_to_disk, which writes latents to disk to save memory. ` +
+            `${sizeClause}and this machine has ~${ramGB.toFixed(0)} GB RAM, comfortably more than ${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights. ` +
+            `Turning disk caching off keeps latents in RAM and skips the per-epoch disk round-trip, speeding up data loading. ` +
+            `Leave it on for very large datasets or when running other memory-heavy apps alongside training.`,
+          setting: 'datasets[].cache_latents_to_disk',
+          current: 'true',
+          recommended: 'false (cache in RAM)',
+          fix: diskCached.map(({ i }) => ({
+            path: `config.process[0].datasets[${i}].cache_latents_to_disk`,
+            value: false,
+          })),
+        });
+      }
+    }
+
     // NOTE: deliberately NOT suggesting "disable offloading to go faster" from a
     // static VRAM estimate. Real telemetry (the Melissa krea2 run) peaked at 98%
     // VRAM *with* offloading already on, so a naive "the transformer fits, drop
