@@ -361,6 +361,35 @@ export function reviewTrainingConfig(
       }
     }
 
+    // Same quality headroom, but offloading is OFF. Here the quantized weights
+    // sit in VRAM and the machine's RAM goes unused. Enabling layer offloading
+    // parks the (bf16) transformer in CPU RAM and streams it to the GPU, which
+    // both uses the spare RAM and frees VRAM — so quantization can be dropped for
+    // higher fidelity without needing the whole model to fit in VRAM. This is the
+    // SAFE direction (enabling offloading only reduces VRAM pressure), unlike
+    // suggesting offloading be turned off, which the note below avoids.
+    if (large && model?.quantize && !offloading && ramGB > 0) {
+      const ramHeadroom = ramGB * 0.85;
+      if (bf16Weights < ramHeadroom) {
+        findings.push({
+          id: 'hw-quant-offload-headroom',
+          level: 'info',
+          title: 'Spare RAM — offload + bf16 for higher fidelity',
+          detail:
+            `Layer offloading is off, so the quantized weights sit in VRAM and this machine's ~${ramGB.toFixed(0)} GB of RAM goes mostly unused during training. ` +
+            `${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights fit comfortably in that RAM, so you can turn layer offloading on — which parks the transformer in CPU RAM and streams it to the GPU — and then drop transformer quantization (bf16) for higher-fidelity training. ` +
+            `Offloading frees VRAM (~${vramGB.toFixed(0)} GB here), so bf16 fits even though the full model would not fit in VRAM unquantized. Trade-off: some speed lost to RAM↔GPU transfer. Raise layer_offloading_transformer_percent if VRAM is still tight.`,
+          setting: 'model.layer_offloading / model.quantize',
+          current: 'layer_offloading=false, quantize=true',
+          recommended: 'offloading on + quantize off (bf16)',
+          fix: [
+            { path: 'config.process[0].model.layer_offloading', value: true },
+            { path: 'config.process[0].model.quantize', value: false },
+          ],
+        });
+      }
+    }
+
     // Latent cache location. cache_latents_to_disk writes latents to disk to
     // save RAM; with the cache held in RAM instead, training skips the per-epoch
     // disk round-trip and data loading is faster. The latent cache is small
