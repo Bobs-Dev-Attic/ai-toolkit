@@ -326,6 +326,29 @@ export function reviewTrainingConfig(
     });
   }
 
+  // ---- Caption dropout vs cached text embeddings ----------------------
+  // Caching text embeddings encodes each caption once and reuses it, so
+  // caption_dropout_rate (and token dropout / shuffle) never takes effect —
+  // the dataloader explicitly skips dropout when cache_text_embeddings is on.
+  // The two settings silently cancel, which surprises people who set both.
+  if (train?.cache_text_embeddings) {
+    const dropIdx = datasets.findIndex(d => (d.caption_dropout_rate ?? 0) > 0);
+    if (dropIdx >= 0) {
+      const rate = datasets[dropIdx].caption_dropout_rate;
+      findings.push({
+        id: 'dropout-vs-cache-te',
+        level: 'warning',
+        title: 'Caption dropout is disabled by cached text embeddings',
+        detail:
+          `cache_text_embeddings is on, which encodes each caption once and reuses it — so caption_dropout_rate (${rate}) has no effect; the trainer skips dropout (and token dropout / shuffle) whenever embeddings are cached. ` +
+          `Turn Cache Text Embeddings OFF to get real caption dropout, or set caption_dropout_rate to 0 so the config reflects what actually happens.`,
+        setting: 'train.cache_text_embeddings / datasets[].caption_dropout_rate',
+        current: `cache_text_embeddings=true, caption_dropout_rate=${rate}`,
+        recommended: 'cache off (for dropout), or dropout 0',
+      });
+    }
+  }
+
   // ---- Krea 2 model-specific recipe (Krea / RunComfy guidance) --------
   // Krea 2 trains with a flow-matching schedule and a model-specific time
   // distribution, so Linear is the correct timestep type. The Turbo variants

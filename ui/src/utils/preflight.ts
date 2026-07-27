@@ -55,6 +55,11 @@ export function archSize(arch: string): ArchSize {
     return { transformerGB: 28, teGB: 11, label: 'Wan 14B (dual expert)' };
   if (a.includes('wan22_5b') || a.includes('wan22_ti2v') || a.includes('5b'))
     return { transformerGB: 10, teGB: 11, label: 'Wan 5B' };
+  // LTX-2.3 is a 22B DiT (~44GB bf16) + a T5-class text encoder (~10GB). Video model.
+  if (a.includes('ltx') && a.includes('2.3'))
+    return { transformerGB: 44, teGB: 10, label: 'LTX-2.3 (22B)' };
+  // LTX-2 (non-2.3): transformer size approximate — verify against the specific checkpoint.
+  if (a.includes('ltx')) return { transformerGB: 20, teGB: 10, label: 'LTX-2' };
   if (a.includes('qwen_image') || a.includes('qwen-image')) return { transformerGB: 40, teGB: 16, label: 'Qwen-Image' };
   if (a.includes('flux')) return { transformerGB: 24, teGB: 10, label: 'Flux.1' };
   if (a.includes('sd3') || a.includes('sd35')) return { transformerGB: 16, teGB: 10, label: 'SD3' };
@@ -200,6 +205,30 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
           `Estimated peak VRAM ~${fmtGB(vramNeed)} vs ${fmtGB(vramGB)}. Offloading/low-VRAM is on, which should help, but an OOM at the first sample or a large batch is possible.`,
       });
     }
+  }
+
+  // ---- Video: frame count drives activation VRAM ----
+  // Weights fitting is necessary but not sufficient for video training: the
+  // per-step activation working set grows ~linearly with frames × resolution ×
+  // batch, and is the usual cause of OOM on a large video model even when the
+  // (quantized/offloaded) weights fit. The static vramNeed estimate above does
+  // not fully capture this, so flag it explicitly.
+  const maxFrames = Math.max(1, ...datasets.map(d => d.num_frames ?? 1));
+  if (maxFrames > 1 && vramGB > 0 && size.transformerGB >= 12) {
+    const trainRes = Math.max(768, ...datasets.flatMap(d => d.resolution ?? []));
+    const heavy = maxFrames >= 49 || (maxFrames >= 25 && trainRes >= 768);
+    const level: FindingLevel = vramGB <= 40 && heavy ? 'warning' : 'info';
+    findings.push({
+      id: 'video-frame-vram',
+      level,
+      title: 'Video training: frame count drives VRAM',
+      detail:
+        `Training on ${maxFrames}-frame clips at up to ${trainRes}px with ${size.label}. Video activation memory grows roughly linearly with frames × resolution × batch and is the usual cause of OOM here — even when the (quantized/offloaded) weights fit in ${fmtGB(vramGB)}. ` +
+        `Keep clips short (e.g. 49 frames) and resolution modest, enable layer offloading, and cut sample size before removing a training resolution. For identity/style LoRAs, an image dataset with num_frames = 1 sidesteps this entirely.`,
+      setting: 'datasets[].num_frames',
+      current: `${maxFrames} frames`,
+      recommended: maxFrames > 49 ? '≤ 49 frames (or 1 for identity/style)' : 'reduce if OOM; 1 for identity/style',
+    });
   }
 
   // ---- Quantization suggestion when nothing is on but the model is large ----
