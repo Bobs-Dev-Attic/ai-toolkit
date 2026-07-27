@@ -326,6 +326,79 @@ export function reviewTrainingConfig(
     });
   }
 
+  // ---- Krea 2 model-specific recipe (Krea / RunComfy guidance) --------
+  // Krea 2 trains with a flow-matching schedule and a model-specific time
+  // distribution, so Linear is the correct timestep type. The Turbo variants
+  // are distilled few-step students: they need the assistant training adapter
+  // to expose a usable training signal, and must be validated in their native
+  // ~8-step / guidance-1 regime rather than the Raw preview recipe.
+  {
+    const a = arch.toLowerCase();
+    if (a.includes('krea2')) {
+      const isTurbo = a.includes('turbo');
+      const ts = (train?.timestep_type || '').toLowerCase();
+
+      if (ts && ts !== 'linear') {
+        findings.push({
+          id: 'krea2-timestep-linear',
+          level: 'warning',
+          title: 'Krea 2 should use Linear timesteps',
+          detail:
+            `timestep_type is "${train?.timestep_type}", but Krea 2 uses a flow-matching schedule where Linear is the correct setting (with the FlowMatch scheduler). ` +
+            `Weighted/Sigmoid recipes copied from FLUX, video, or older diffusion setups push learning toward the wrong noise regions — the symptom is weak concept pickup or a LoRA that only works at extreme weight.`,
+          setting: 'train.timestep_type',
+          current: String(train?.timestep_type ?? ''),
+          recommended: 'linear',
+          fix: [{ path: 'config.process[0].train.timestep_type', value: 'linear' }],
+        });
+      }
+
+      if (isTurbo) {
+        const adapter = model?.assistant_lora_path;
+        if (!adapter || String(adapter).trim() === '') {
+          findings.push({
+            id: 'krea2-turbo-adapter',
+            level: 'warning',
+            title: 'Krea 2 Turbo needs its training adapter',
+            detail:
+              `This is a Krea 2 Turbo (distilled) run, but no assistant training adapter is set. Turbo has a compressed few-step trajectory that ordinary fine-tuning erases quickly; the adapter temporarily de-distills the student so a LoRA can train. ` +
+              `Without it, 8-step previews degrade while high-step previews look deceptively better — that is damaged distillation, not a good LoRA.`,
+            setting: 'model.assistant_lora_path',
+            current: 'unset',
+            recommended: 'ostris/krea2_turbo_training_adapter/krea2_turbo_training_adapter_v1.safetensors',
+            fix: [
+              {
+                path: 'config.process[0].model.assistant_lora_path',
+                value: 'ostris/krea2_turbo_training_adapter/krea2_turbo_training_adapter_v1.safetensors',
+              },
+            ],
+          });
+        }
+
+        const ss = process.sample?.sample_steps;
+        const gs = process.sample?.guidance_scale;
+        const samplingOn = !train?.disable_sampling;
+        if (samplingOn && ((typeof ss === 'number' && ss > 12) || (typeof gs === 'number' && gs > 2))) {
+          findings.push({
+            id: 'krea2-turbo-sampling',
+            level: 'warning',
+            title: 'Validate Krea 2 Turbo at ~8 steps, guidance 1',
+            detail:
+              `Turbo is a few-step model, but previews are set to ${ss ?? '?'} steps / guidance ${gs ?? '?'}. Raw-style 25–30 steps and guidance 4 evaluate a different regime — they over-steer the distilled trajectory, exaggerate artifacts, and hide early drift. ` +
+              `Sample at ~8 steps and guidance 1 so each checkpoint is judged at its deployment settings.`,
+            setting: 'sample.sample_steps / sample.guidance_scale',
+            current: `${ss ?? '?'} steps, guidance ${gs ?? '?'}`,
+            recommended: '~8 steps, guidance 1',
+            fix: [
+              { path: 'config.process[0].sample.sample_steps', value: 8 },
+              { path: 'config.process[0].sample.guidance_scale', value: 1 },
+            ],
+          });
+        }
+      }
+    }
+  }
+
   // ---- Hardware-aware: quality headroom -------------------------------
   // preflight.ts flags when settings WON'T fit. This is the opposite
   // direction: when the machine has enough headroom to RELAX a

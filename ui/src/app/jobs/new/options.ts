@@ -1078,6 +1078,11 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].model.quantize': [true, false],
       'config.process[0].model.quantize_te': [true, false],
       'config.process[0].train.timestep_type': ['linear', 'sigmoid'],
+      // Krea 2 Raw baseline (Krea/RunComfy guidance): ~2500 steps, monitor
+      // previews at 30 steps / guidance 4.
+      'config.process[0].train.steps': [2500, 3000],
+      'config.process[0].sample.sample_steps': [30, 25],
+      'config.process[0].sample.guidance_scale': [4, 4],
       'config.process[0].network.conv': [undefined, 16],
       'config.process[0].network.conv_alpha': [undefined, 16],
       'config.process[0].model.low_vram': [true, false],
@@ -1107,8 +1112,11 @@ export const modelArchs: ModelArch[] = [
         'ostris/krea2_turbo_training_adapter/krea2_turbo_training_adapter_v1.safetensors',
         undefined,
       ],
+      // Krea 2 Turbo baseline (Krea/RunComfy guidance): shorter runs (~1000
+      // steps) and validate in the native few-step regime (8 steps / guidance 1).
+      'config.process[0].train.steps': [1000, 3000],
       'config.process[0].sample.guidance_scale': [1, 4],
-      'config.process[0].sample.sample_steps': [9, 25],
+      'config.process[0].sample.sample_steps': [8, 25],
     },
     disableSections: [
       'network.conv',
