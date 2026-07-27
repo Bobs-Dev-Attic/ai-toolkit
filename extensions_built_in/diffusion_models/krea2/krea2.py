@@ -659,8 +659,22 @@ class Krea2Model(BaseModel):
         if t.shape[0] != latent_model_input.shape[0]:
             t = t.expand(latent_model_input.shape[0])
 
+        # Cached text embeddings (cache_text_embeddings=true) are stored
+        # un-flattened as (Lt, n_layers, d) — the live encode path flattens the
+        # 12 Qwen3-VL layers into the feature axis F = n*d (see get_prompt_embeds),
+        # but the on-disk cache keeps the pre-flatten tensor. Restore the 2D
+        # (Lt, F) invariant that pad_text_features / predict_velocity require, so
+        # cached and live runs are identical. No-op for the already-2D live path.
+        def _flatten_txt(f: torch.Tensor) -> torch.Tensor:
+            if f.dim() == 4 and f.shape[0] == 1:
+                f = f.squeeze(0)  # (1, Lt, n, d) -> (Lt, n, d)
+            if f.dim() == 3:
+                f = f.reshape(f.shape[0], -1)  # (Lt, n, d) -> (Lt, n*d)
+            return f
+
+        text_embeds = [_flatten_txt(f) for f in text_embeddings.text_embeds]
         context, text_mask = pad_text_features(
-            text_embeddings.text_embeds, self.device_torch, self.torch_dtype
+            text_embeds, self.device_torch, self.torch_dtype
         )
 
         pred = predict_velocity(
