@@ -364,7 +364,11 @@ class DiffusionTrainer(SDTrainer):
             import shutil as _shutil
             import re as _re
 
-            pattern = os.path.join(self.save_root, f"{self.job.name}_*.safetensors")
+            # Note the trailing wildcard has no leading underscore: the end-of-run
+            # save (BaseSDTrainProcess.save() with no step) writes an unnumbered
+            # "{name}.safetensors" — the true final checkpoint — while periodic
+            # saves carry a "_<step>" suffix. Both must be candidates.
+            pattern = os.path.join(self.save_root, f"{self.job.name}*.safetensors")
             # Exclude auxiliary safetensors (e.g. critic checkpoints) that share the folder.
             candidates = [
                 c for c in _glob.glob(pattern)
@@ -376,10 +380,18 @@ class DiffusionTrainer(SDTrainer):
 
             def _step_of(p):
                 m = _re.search(r"_(\d+)\.safetensors$", os.path.basename(p))
-                return int(m.group(1)) if m else -1
+                return int(m.group(1)) if m else None
 
-            # Highest training step wins; mtime breaks ties / unparseable names.
-            latest = max(candidates, key=lambda p: (_step_of(p), os.path.getmtime(p)))
+            # The unnumbered end-of-run checkpoint is the final one, so it wins
+            # over every numbered save; among numbered saves the highest step
+            # wins; mtime breaks any remaining ties.
+            def _rank(p):
+                step = _step_of(p)
+                return (1 if step is None else 0,
+                        step if step is not None else -1,
+                        os.path.getmtime(p))
+
+            latest = max(candidates, key=_rank)
             os.makedirs(dest, exist_ok=True)
             base = os.path.basename(latest)
             dest_path = os.path.join(dest, base)

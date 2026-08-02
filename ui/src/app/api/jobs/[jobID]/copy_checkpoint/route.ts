@@ -38,11 +38,14 @@ export async function POST(request: NextRequest, { params }: { params: { jobID: 
     return NextResponse.json({ error: 'Job folder does not exist yet' }, { status: 404 });
   }
 
-  // Main checkpoints are named `{job.name}_{step:09d}.safetensors`. Exclude
-  // auxiliary safetensors (e.g. CRITIC_*) that can share the folder.
-  const stepOf = (name: string): number => {
+  // Periodic checkpoints are named `{job.name}_{step:09d}.safetensors`; the
+  // end-of-run save writes an unnumbered `{job.name}.safetensors` — the true
+  // final checkpoint. `stepOf` returns null for that unnumbered file so it can
+  // be ranked above every numbered save. Exclude auxiliary safetensors
+  // (e.g. CRITIC_*) that can share the folder.
+  const stepOf = (name: string): number | null => {
     const m = name.match(/_(\d+)\.safetensors$/);
-    return m ? parseInt(m[1], 10) : -1;
+    return m ? parseInt(m[1], 10) : null;
   };
   const candidates = entries.filter(
     f => f.endsWith('.safetensors') && !f.startsWith('CRITIC_'),
@@ -51,9 +54,10 @@ export async function POST(request: NextRequest, { params }: { params: { jobID: 
     return NextResponse.json({ error: 'No checkpoint found for this job yet' }, { status: 404 });
   }
 
-  // Highest training step wins; mtime breaks ties / unparseable names.
+  // The unnumbered final wins over every numbered save; among numbered saves
+  // the highest step wins; mtime breaks any remaining ties.
   let latest = candidates[0];
-  let latestKey: [number, number] = [-1, -1];
+  let latestKey: [number, number, number] = [-1, -1, -1];
   for (const f of candidates) {
     let mtime = 0;
     try {
@@ -62,8 +66,13 @@ export async function POST(request: NextRequest, { params }: { params: { jobID: 
       // skip unreadable entries
       continue;
     }
-    const key: [number, number] = [stepOf(f), mtime];
-    if (key[0] > latestKey[0] || (key[0] === latestKey[0] && key[1] > latestKey[1])) {
+    const step = stepOf(f);
+    const key: [number, number, number] = [step === null ? 1 : 0, step ?? -1, mtime];
+    if (
+      key[0] > latestKey[0] ||
+      (key[0] === latestKey[0] && key[1] > latestKey[1]) ||
+      (key[0] === latestKey[0] && key[1] === latestKey[1] && key[2] > latestKey[2])
+    ) {
       latest = f;
       latestKey = key;
     }
