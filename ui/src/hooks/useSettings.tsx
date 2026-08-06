@@ -12,6 +12,7 @@ export interface Settings {
   ENABLED_MODEL_ARCHS: string;
   /** Override for the HuggingFace hub cache dir. Empty = default location. */
   HF_HUB_CACHE: string;
+  MODELS_PATH: string;
 }
 
 export default function useSettings() {
@@ -22,6 +23,7 @@ export default function useSettings() {
     MODELS_FOLDER: '',
     ENABLED_MODEL_ARCHS: '',
     HF_HUB_CACHE: '',
+    MODELS_PATH: '',
   });
   const [isSettingsLoaded, setIsLoaded] = useState(false);
   useEffect(() => {
@@ -37,6 +39,7 @@ export default function useSettings() {
           MODELS_FOLDER: data.MODELS_FOLDER || '',
           ENABLED_MODEL_ARCHS: data.ENABLED_MODEL_ARCHS || '',
           HF_HUB_CACHE: data.HF_HUB_CACHE || '',
+          MODELS_PATH: data.MODELS_PATH || '',
         });
         setIsLoaded(true);
       })

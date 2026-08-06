@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/server/prisma';
-import { defaultTrainFolder, defaultDatasetsFolder } from '@/paths';
+import { defaultTrainFolder, defaultDatasetsFolder, defaultModelsFolder } from '@/paths';
 import { flushCache } from '@/server/settings';
 import { applyHfCacheEnv } from '@/server/hfCache';
 
@@ -26,6 +26,13 @@ export async function GET() {
     if (!settingsObject.HF_HUB_CACHE) {
       settingsObject.HF_HUB_CACHE = '';
     }
+    // MODELS_PATH from the env file always takes precedence over the setting
+    if (process.env.MODELS_PATH && process.env.MODELS_PATH.trim() !== '') {
+      settingsObject.MODELS_PATH = process.env.MODELS_PATH;
+    } else if (!settingsObject.MODELS_PATH || settingsObject.MODELS_PATH === '') {
+      // if MODELS_PATH is not set, use default
+      settingsObject.MODELS_PATH = defaultModelsFolder;
+    }
     return NextResponse.json(settingsObject);
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch settings' }, { status: 500 });
@@ -35,7 +42,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { HF_TOKEN, TRAINING_FOLDER, DATASETS_FOLDER, MODELS_FOLDER, ENABLED_MODEL_ARCHS, HF_HUB_CACHE } = body;
+    const { HF_TOKEN, TRAINING_FOLDER, DATASETS_FOLDER, MODELS_FOLDER, ENABLED_MODEL_ARCHS, HF_HUB_CACHE, MODELS_PATH } = body;
 
     const ops: Promise<any>[] = [];
     const upsert = (key: string, value: string | undefined | null) => {
@@ -55,6 +62,7 @@ export async function POST(request: Request) {
     upsert('MODELS_FOLDER', MODELS_FOLDER);
     upsert('ENABLED_MODEL_ARCHS', ENABLED_MODEL_ARCHS);
     upsert('HF_HUB_CACHE', HF_HUB_CACHE);
+    upsert('MODELS_PATH', MODELS_PATH);
 
     await Promise.all(ops);
     flushCache();
