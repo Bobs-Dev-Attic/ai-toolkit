@@ -22,6 +22,7 @@ import { Finding, PreflightHardware, archSize } from './preflight';
 function bucketDivisibility(arch: string): number {
   const a = (arch || '').toLowerCase();
   if (a.includes('krea2')) return 16; // vae 8 * patch 2
+  if (a.includes('minimax_h3') || a.includes('minimax')) return 32; // vae 16 * patch 2
   if (a.includes('qwen_image') || a.includes('qwen-image')) return 32; // vae 16 * patch 2
   if (a.includes('wan')) return 16;
   if (a.includes('flux')) return 16;
@@ -37,6 +38,7 @@ function transformerIsLarge(arch: string): boolean {
   const a = (arch || '').toLowerCase();
   return (
     a.includes('krea2') ||
+    a.includes('minimax') ||
     a.includes('qwen') ||
     a.includes('flux2') ||
     a.includes('klein') ||
@@ -418,6 +420,121 @@ export function reviewTrainingConfig(
             ],
           });
         }
+      }
+    }
+  }
+
+  // ---- MiniMax H3 model-specific recipe (RunComfy / model-card guidance) ----
+  // H3 is a CFG-distilled video+audio model with a strict temporal grid and
+  // pre-quantized weights. The costly mistakes are: validating at CFG > 1 (the
+  // distilled trajectory over-saturates), feeding clips off the 17n+5 grid (they
+  // get silently trimmed), and re-quantizing weights that already ship quantized.
+  {
+    const a = arch.toLowerCase();
+    if (a.includes('minimax_h3') || a.includes('minimax')) {
+      const samplingOn = !train?.disable_sampling;
+      const gs = process.sample?.guidance_scale;
+
+      // Guidance MUST be 1.0 — the model is CFG-distilled.
+      if (samplingOn && typeof gs === 'number' && gs !== 1) {
+        findings.push({
+          id: 'minimax_h3-guidance-one',
+          level: 'warning',
+          title: 'MiniMax H3 validates at Guidance 1.0 (CFG = 1)',
+          detail:
+            `Preview guidance_scale is ${gs}, but MiniMax H3 is CFG-distilled — its sampler runs without classifier-free guidance. ` +
+            `Validating at 3.5/7.0 evaluates a regime the model never uses: the previews come out over-saturated and artifact-heavy and misrepresent the LoRA's true state, hiding real progress or drift.`,
+          setting: 'sample.guidance_scale',
+          current: String(gs),
+          recommended: '1',
+          fix: [{ path: 'config.process[0].sample.guidance_scale', value: 1 }],
+        });
+      }
+
+      // Flow-matching schedule is required.
+      const ns = (train?.noise_scheduler || '').toLowerCase();
+      if (ns && ns !== 'flowmatch') {
+        findings.push({
+          id: 'minimax_h3-flowmatch',
+          level: 'warning',
+          title: 'MiniMax H3 needs the FlowMatch scheduler',
+          detail:
+            `noise_scheduler is "${train?.noise_scheduler}", but H3 is a flow-matching model and trains with the FlowMatch scheduler (which applies the model's own timestep/sigma shift). Other schedulers sample the wrong noise regime and the LoRA will barely learn.`,
+          setting: 'train.noise_scheduler',
+          current: String(train?.noise_scheduler ?? ''),
+          recommended: 'flowmatch',
+          fix: [{ path: 'config.process[0].train.noise_scheduler', value: 'flowmatch' }],
+        });
+      }
+
+      // Weights ship pre-quantized (int8-ConvRot DiT + nvfp4 TE) — re-quantizing
+      // is wasted work at best and can corrupt the packed scales.
+      if (model?.quantize || model?.quantize_te) {
+        findings.push({
+          id: 'minimax_h3-no-requantize',
+          level: 'warning',
+          title: 'MiniMax H3 weights are already quantized',
+          detail:
+            `quantize=${!!model?.quantize} / quantize_te=${!!model?.quantize_te}, but the Comfy-Org H3 checkpoint already ships as int8-ConvRot (DiT) and nvfp4-AWQ (Qwen3-VL text encoder). Turning quantization on runs a redundant pass over pre-packed weights — leave it off and manage VRAM with Low VRAM mode and layer offloading instead.`,
+          setting: 'model.quantize / model.quantize_te',
+          current: `quantize=${!!model?.quantize}, quantize_te=${!!model?.quantize_te}`,
+          recommended: 'both off',
+          fix: [
+            { path: 'config.process[0].model.quantize', value: false },
+            { path: 'config.process[0].model.quantize_te', value: false },
+          ],
+        });
+      }
+
+      // Temporal grid: video clips must be 17n+5 (5, 22, 39, 56, …) or a single
+      // still. Off-grid counts are trimmed DOWN at load, wasting decode and
+      // training on fewer frames than configured. auto_frame_count snaps for you.
+      const validFrame = (n: number) => n === 1 || (n >= 5 && (n - 5) % 17 === 0);
+      const offGrid = datasets.filter(
+        d => !d.auto_frame_count && typeof d.num_frames === 'number' && d.num_frames > 1 && !validFrame(d.num_frames),
+      );
+      if (offGrid.length > 0) {
+        const examples = offGrid.map(d => d.num_frames).slice(0, 4).join(', ');
+        findings.push({
+          id: 'minimax_h3-frame-grid',
+          level: 'warning',
+          title: 'MiniMax H3 clips must be on the 17n+5 frame grid',
+          detail:
+            `${offGrid.length} dataset(s) set num_frames to ${examples}, which is not on H3's temporal grid (5, 22, 39, 56, 73, 90, 107 …). The VAE trims off-grid clips DOWN to the nearest valid count, so you decode and train on fewer frames than you asked for. Use a valid count (39 ≈ 1.63s @ 24fps is the character sweet spot), or turn on Auto Frame Count to snap automatically.`,
+          setting: 'datasets[].num_frames',
+          current: examples,
+          recommended: '5, 22, 39, 56, … (or enable auto_frame_count)',
+        });
+      }
+
+      // Rank baseline for character likeness. Higher ranks tend to absorb
+      // lighting/background into the identity.
+      if (isLora && typeof network?.linear === 'number' && network.linear > 16) {
+        findings.push({
+          id: 'minimax_h3-rank-baseline',
+          level: 'info',
+          title: 'MiniMax H3 character LoRAs favour Rank 16',
+          detail:
+            `Network rank is ${network.linear}. For H3 character likeness the RunComfy baseline is Linear Rank 16 / Alpha 16 (Alpha 8 also works). Jumping to 32+ early tends to bake lighting and background into the character rather than the face/body identity. Raise rank only if 16 underfits.`,
+          setting: 'network.linear / network.linear_alpha',
+          current: String(network.linear),
+          recommended: '16 / 16',
+        });
+      }
+
+      // Audio supervision reminder — only when it's actually on.
+      const audioOn = datasets.some(d => d.do_audio);
+      if (audioOn) {
+        findings.push({
+          id: 'minimax_h3-audio-on',
+          level: 'info',
+          title: 'Audio supervision is on',
+          detail:
+            `At least one dataset has Do Audio enabled, so H3 will jointly learn audio with appearance. That is correct for voice/lipsync, but it costs extra compute and needs clean, synchronized audio clips. For a pure physical-appearance character LoRA, turn Do Audio OFF so audio gradients don't distort the visual identity.`,
+          setting: 'datasets[].do_audio',
+          current: 'on',
+          recommended: 'off for pure-appearance characters',
+        });
       }
     }
   }

@@ -243,6 +243,79 @@ export const CONFIG_PRESETS: Record<string, ConfigPreset[]> = {
   ],
 
   // ───────────────────────────────────────────────────────────────────
+  // MiniMax H3 (pruned int8-ConvRot DiT + nvfp4 Qwen3-VL-32B TE, video+audio)
+  //
+  // The weights ship PRE-QUANTIZED, so unlike every other family here the memory
+  // levers are NOT quantize toggles — they are low_vram, layer offloading, and
+  // gradient checkpointing (which also checkpoints the video/audio VAEs). Video
+  // activation memory scales with frame count, so the tiers also step frames on
+  // the 17n+5 grid (5, 22, 39, 56, …). batch_size stays 1 (required by
+  // auto_frame_count). gradient_checkpointing=true covers UNet + TE + VAE.
+  // ───────────────────────────────────────────────────────────────────
+  minimax_h3: [
+    {
+      id: 'minimax_h3-memory',
+      label: 'Memory',
+      description: '16–20 GB VRAM. Low VRAM + full offload, 5-frame clips. For tight VRAM.',
+      approxVramGB: 18,
+      tier: 'memory',
+      overrides: {
+        // pre-quantized weights: keep quantize OFF, save VRAM by offloading
+        'config.process[0].model.quantize': false,
+        'config.process[0].model.quantize_te': false,
+        'config.process[0].model.low_vram': true,
+        'config.process[0].model.layer_offloading': true,
+        'config.process[0].model.layer_offloading_transformer_percent': 0.5,
+        'config.process[0].model.layer_offloading_text_encoder_percent': 1.0,
+        'config.process[0].train.gradient_checkpointing': true,
+        'config.process[0].train.gradient_accumulation': 4,
+        'config.process[0].train.batch_size': 1,
+        'config.process[0].datasets[0].cache_latents_to_disk': true,
+        'config.process[0].datasets[0].num_frames': 5,
+        'config.process[0].datasets[0].resolution': [512, 768],
+      },
+    },
+    {
+      id: 'minimax_h3-balanced',
+      label: 'Balanced',
+      description: '24–32 GB VRAM. Low VRAM, no offload, 39-frame clips. Recommended.',
+      approxVramGB: 26,
+      tier: 'balanced',
+      overrides: {
+        'config.process[0].model.quantize': false,
+        'config.process[0].model.quantize_te': false,
+        'config.process[0].model.low_vram': true,
+        'config.process[0].model.layer_offloading': false,
+        'config.process[0].train.gradient_checkpointing': true,
+        'config.process[0].train.gradient_accumulation': 1,
+        'config.process[0].train.batch_size': 1,
+        'config.process[0].datasets[0].cache_latents_to_disk': true,
+        'config.process[0].datasets[0].num_frames': 39,
+        'config.process[0].datasets[0].resolution': [512, 768],
+      },
+    },
+    {
+      id: 'minimax_h3-quality',
+      label: 'Quality',
+      description: '40+ GB VRAM. No low-VRAM, 56-frame clips at up to 1024px. A6000/H100-class.',
+      approxVramGB: 44,
+      tier: 'quality',
+      overrides: {
+        'config.process[0].model.quantize': false,
+        'config.process[0].model.quantize_te': false,
+        'config.process[0].model.low_vram': false,
+        'config.process[0].model.layer_offloading': false,
+        'config.process[0].train.gradient_checkpointing': true,
+        'config.process[0].train.gradient_accumulation': 1,
+        'config.process[0].train.batch_size': 1,
+        'config.process[0].datasets[0].cache_latents_to_disk': true,
+        'config.process[0].datasets[0].num_frames': 56,
+        'config.process[0].datasets[0].resolution': [512, 768, 1024],
+      },
+    },
+  ],
+
+  // ───────────────────────────────────────────────────────────────────
   // SDXL (lightweight compared to FLUX/Qwen; can fit much more comfortably)
   // ───────────────────────────────────────────────────────────────────
   sdxl: [

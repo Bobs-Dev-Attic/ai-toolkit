@@ -369,6 +369,54 @@ export const modelArchs: ModelArch[] = [
     additionalSections: ['sample.ctrl_img', 'datasets.num_frames', 'model.low_vram', 'datasets.do_i2v', 'datasets.auto_frame_count'],
   },
   {
+    name: 'minimax_h3',
+    label: 'MiniMax H3 (Character / I2V)',
+    group: 'video',
+    isVideoModel: true,
+    // The tokenizer/processor/config come from the (license-gated) original repo.
+    gateUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-H3',
+    defaults: {
+      // Comfy-Org repack ships the pruned int8-ConvRot DiT and the nvfp4 Qwen3-VL
+      // text encoder (~15.7 GB) plus both VAEs; the loader fetches them into
+      // MODELS_PATH rather than the 50+ GB bf16 base.
+      'config.process[0].model.name_or_path': ['Comfy-Org/MiniMax-H3', defaultNameOrPath],
+      // Weights arrive pre-quantized (ConvRot int8 / nvfp4), so no extra quantize
+      // pass is needed — VRAM is managed with low_vram (+ optional offloading).
+      'config.process[0].model.quantize': [false, false],
+      'config.process[0].model.quantize_te': [false, false],
+      'config.process[0].model.low_vram': [true, false],
+      'config.process[0].sample.sampler': ['flowmatch', 'flowmatch'],
+      'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
+      // Flow-matching; the H3 scheduler applies the model's own sigma shift.
+      'config.process[0].train.timestep_type': ['linear', 'sigmoid'],
+      // Character-likeness baseline: Linear Rank 16 / Alpha 16 (RunComfy guidance).
+      // Higher ranks tend to bake lighting/background into the character.
+      'config.process[0].network.linear': [16, defaultLinearRank],
+      'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+      // CFG-distilled: previews MUST be at guidance 1.0, or they over-saturate
+      // and fill with artifacts that misrepresent the LoRA.
+      'config.process[0].sample.guidance_scale': [1, 4],
+      // Still-frame previews (num_frames 1) are the fast way to read identity.
+      'config.process[0].sample.num_frames': [1, 1],
+      'config.process[0].sample.fps': [24, 1],
+      // 39 frames (~1.63s @ 24fps) on the 17n+5 grid is the character sweet spot.
+      'config.process[0].datasets[x].num_frames': [39, undefined],
+      'config.process[0].datasets[x].fps': [24, undefined],
+      'config.process[0].datasets[x].auto_frame_count': [true, undefined],
+      // Pure appearance: audio supervision off. Turn on for voice/lipsync.
+      'config.process[0].datasets[x].do_audio': [false, undefined],
+    },
+    disableSections: ['network.conv'],
+    additionalSections: [
+      'datasets.num_frames',
+      'datasets.auto_frame_count',
+      'datasets.do_i2v',
+      'datasets.do_audio',
+      'model.low_vram',
+      'model.layer_offloading',
+    ],
+  },
+  {
     name: 'lumina2',
     label: 'Lumina2',
     group: 'image',

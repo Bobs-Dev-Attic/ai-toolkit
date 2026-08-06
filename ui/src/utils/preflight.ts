@@ -50,6 +50,10 @@ export function archSize(arch: string): ArchSize {
   // order matters: match most specific first
   // 12.9B transformer (~26GB bf16) + Qwen3-VL-4B text encoder (~8GB)
   if (a.includes('krea2')) return { transformerGB: 26, teGB: 8, label: 'Krea 2' };
+  // MiniMax H3 ships pre-quantized: pruned int8-ConvRot DiT (~13GB) + nvfp4 AWQ
+  // Qwen3-VL-32B text encoder (~16GB). These are the resident footprints — the
+  // weights never load at bf16, so quantize stays off (see isPrequantized).
+  if (a.includes('minimax_h3') || a.includes('minimax')) return { transformerGB: 13, teGB: 16, label: 'MiniMax H3' };
   if (a.includes('flux2') || a.includes('klein')) return { transformerGB: 18, teGB: 16, label: 'Flux.2 Klein 9B' };
   if (a.includes('wan22_14b') || a.includes('wan21_14b') || a.includes('wan2_14b'))
     return { transformerGB: 28, teGB: 11, label: 'Wan 14B (dual expert)' };
@@ -75,6 +79,14 @@ function quantFactor(qtype: string | undefined, quantize: boolean | undefined): 
   if (q.includes('uint4') || q.includes('int4') || q.includes('4bit')) return 0.3;
   if (q.includes('float8') || q.includes('int8') || q.includes('8bit')) return 0.55;
   return 0.55; // assume 8-bit-ish
+}
+
+// Some architectures ship pre-quantized weights (e.g. MiniMax H3's int8-ConvRot
+// DiT + nvfp4 Qwen3-VL text encoder). For these, `quantize` should stay OFF and
+// archSize already reflects the quantized resident footprint — so we must never
+// tell the user to turn quantization on to "save memory".
+export function isPrequantized(arch: string | undefined): boolean {
+  return (arch || '').toLowerCase().includes('minimax_h3');
 }
 
 function fmtGB(gb: number): string {
@@ -131,7 +143,7 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
   if (ramGB > 0) {
     const ramBudget = ramGB * 0.85; // leave headroom for OS + framework
     if (weightsEff > ramBudget) {
-      const wantQuant = !model?.quantize || !model?.quantize_te;
+      const wantQuant = (!model?.quantize || !model?.quantize_te) && !isPrequantized(model?.arch);
       findings.push({
         id: 'ram-weights',
         level: 'error',
@@ -152,7 +164,7 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
             ]
           : undefined,
       });
-    } else if (weightsFull > ramBudget && (!model?.quantize || !model?.quantize_te)) {
+    } else if (weightsFull > ramBudget && (!model?.quantize || !model?.quantize_te) && !isPrequantized(model?.arch)) {
       // Fits once quantized, but the unquantized *load transient* may not.
       findings.push({
         id: 'ram-transient',
@@ -232,7 +244,7 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
   }
 
   // ---- Quantization suggestion when nothing is on but the model is large ----
-  if ((size.transformerGB >= 12) && !model?.quantize && vramGB > 0 && vramGB < size.transformerGB * 1.3) {
+  if ((size.transformerGB >= 12) && !model?.quantize && !isPrequantized(model?.arch) && vramGB > 0 && vramGB < size.transformerGB * 1.3) {
     findings.push({
       id: 'quant-suggest',
       level: 'warning',
