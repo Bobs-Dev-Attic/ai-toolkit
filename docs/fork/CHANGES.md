@@ -22,6 +22,9 @@ single page you can now:
 - **Resize** images (longest-side or exact W×H, with format conversion)
 - **Remove backgrounds** (rembg with u2net / isnet / BiRefNet variants;
   transparent or flat-color output)
+- **Remove text / watermarks / logos** — Grounding DINO detects the regions
+  from open-vocabulary prompts and LaMa inpaints them away (with extra
+  custom phrases, sensitivity + padding controls)
 - **Upscale** images with Real-ESRGAN (×2 / ×4 / ×4plus via spandrel)
 - **Bulk delete** selected images and their captions
 - **Show Metadata** overlay (filename, dimensions, file size)
@@ -51,6 +54,7 @@ stream a uniform progress bar for any operation. They share the
 | [`scripts/caption_dataset.py`](../../scripts/caption_dataset.py) | BLIP-large image captioning with Style/Prompt/RepetitionPenalty | `transformers` (BLIP) |
 | [`scripts/resize_images.py`](../../scripts/resize_images.py) | Pillow resize with fit/cover/pad/stretch, format conversion | `Pillow` |
 | [`scripts/remove_background.py`](../../scripts/remove_background.py) | rembg with selectable model + output background | `rembg`, `onnxruntime` |
+| [`scripts/remove_watermark.py`](../../scripts/remove_watermark.py) | Grounding DINO detection + LaMa inpaint of text/watermarks/logos | `transformers` (Grounding DINO), `simple-lama-inpainting` |
 | [`scripts/upscale_images.py`](../../scripts/upscale_images.py) | Real-ESRGAN via spandrel; auto-detects scale from .pth | `spandrel`, `torch` |
 | [`scripts/auto_crop.py`](../../scripts/auto_crop.py) | Square-default face/body crop; insightface (face) + YOLOv8n (person) | `insightface`, `ultralytics` |
 
@@ -83,7 +87,7 @@ below) and would fail under SSL-intercepting antivirus.
 
 ## New API routes (Next.js)
 
-All five are streaming SSE endpoints built on the shared `spawnImageOpStream`
+All six are streaming SSE endpoints built on the shared `spawnImageOpStream`
 helper.
 
 | Route | Method | Purpose |
@@ -91,6 +95,7 @@ helper.
 | [`/api/datasets/caption`](../../ui/src/app/api/datasets/caption/route.ts) | POST | Caption (full-dataset or selection) |
 | [`/api/datasets/resize`](../../ui/src/app/api/datasets/resize/route.ts) | POST | Resize selected images |
 | [`/api/datasets/removeBackground`](../../ui/src/app/api/datasets/removeBackground/route.ts) | POST | Background removal |
+| [`/api/datasets/removeWatermark`](../../ui/src/app/api/datasets/removeWatermark/route.ts) | POST | Text / watermark / logo removal |
 | [`/api/datasets/upscale`](../../ui/src/app/api/datasets/upscale/route.ts) | POST | Upscale |
 | [`/api/datasets/autoCrop`](../../ui/src/app/api/datasets/autoCrop/route.ts) | POST | Auto-crop |
 | [`/api/img/bulkDelete`](../../ui/src/app/api/img/bulkDelete/route.ts) | POST | Delete N images + captions |
@@ -117,12 +122,13 @@ The single most-modified file. Now includes:
   expandable **Advanced** panel exposing Style (short/standard/detailed),
   conditional prompt, and repetition-penalty slider
 - **Bulk action bar** below it: selection counter, Select-all / Clear,
-  Delete, Resize, Remove BG, Upscale, Auto-Crop, columns slider (1–6),
-  Show Metadata toggle, Refresh
+  Delete, Resize, Remove BG, Remove text/watermark, Upscale, Auto-Crop,
+  columns slider (1–6), Show Metadata toggle, Refresh
 - **Floating progress modal** in the bottom-right corner; uniform for all
   ops; shows download progress + per-image progress in one place; doesn't
   block the gallery
-- Four modals (Resize, Remove BG, Upscale, Auto-Crop) for op options
+- Five modals (Resize, Remove BG, Remove text/watermark, Upscale,
+  Auto-Crop) for op options
 - Dynamic grid columns from 1 to 6 (persisted to `localStorage` under
   `AI_TOOLKIT_DATASET_COLS`)
 - Cache-bust on `/api/img/<path>` via `?v=${size}-${reloadSignal}` query
@@ -148,7 +154,12 @@ onnxruntime       # rembg backend (CPU)
 spandrel          # PyTorch super-res model loader
 insightface       # RetinaFace face detector
 ultralytics       # YOLOv8 person detector
+simple-lama-inpainting  # LaMa inpainter for text/watermark/logo removal
 ```
+
+Grounding DINO (the detector for text/watermark/logo removal) needs no extra
+package — it loads through the already-present `transformers` via
+`AutoModelForZeroShotObjectDetection`.
 
 NumPy is pinned to `<2` (some of these initially pulled 2.x; downgraded
 back to 1.26 to avoid breaking the rest of the toolkit's training stack).
@@ -177,6 +188,9 @@ All cached under `~/.cache/huggingface/hub` unless noted.
 | Upscale ×4plus | `lllyasviel/Annotators` / `RealESRGAN_x4plus.pth` | 67 MB | HF Hub | HF cache |
 | Auto-Crop (face) | insightface `buffalo_l` pack | 282 MB | GitHub releases | `~/.insightface/models/buffalo_l/` |
 | Auto-Crop (person) | YOLOv8n | 6 MB | ultralytics releases | `~/.ultralytics/` |
+| Remove text/wm (detector) | `IDEA-Research/grounding-dino-tiny` | ~690 MB | HF Hub | HF cache |
+| Remove text/wm (detector, large) | `IDEA-Research/grounding-dino-base` | ~900 MB | HF Hub | HF cache |
+| Remove text/wm (inpaint) | `big-lama.pt` (torchscript) | ~196 MB | GitHub releases | `torch.hub/checkpoints/` |
 
 ---
 
@@ -203,6 +217,27 @@ hit a cascade of `_supports_sdpa`, `GenerationMixin`, `generation_config`,
 and `prepare_inputs_for_generation` incompatibilities. **Switched to
 BLIP-large** as a first-class-supported alternative. Decision recorded
 in the captioning script comment.
+
+### Text/watermark/logo removal: why Grounding DINO, not Florence-2
+
+Florence-2 was the obvious detector for this (its `<OCR_WITH_REGION>` +
+`<CAPTION_TO_PHRASE_GROUNDING>` tasks cover text, watermarks, and logos in
+one model). transformers 5.5.3 even ships a *native* `Florence2` model — but
+the official `microsoft/Florence-2-base-ft` checkpoint is **not converted for
+it**: the native processor requires `tokenizer.image_token` (the slow
+`RobertaTokenizer` has none), and the native config's `image_token_id` (51289)
+lands outside the checkpoint's embedding table (`vocab_size` 51289, valid rows
+0–51288). Loading blows up in the processor; forcing it past that would index
+past the embedding.
+
+**Switched to Grounding DINO** (`AutoModelForZeroShotObjectDetection`), which
+is genuinely first-class in transformers 5.x. Each enabled target plus any
+custom phrases become a period-separated open-vocab caption, detected in a
+single forward pass; the union of the returned boxes (dilated) is the inpaint
+mask. The detector runs in **float32 regardless of device** — its conv stack
+errors on fp16 weights fed fp32 image tensors, and it's small enough that fp32
+costs nothing. Inpainting is LaMa via `simple-lama-inpainting`, whose
+torchscript checkpoint downloads from GitHub (truststore covers the SSL).
 
 ### Real-ESRGAN HEAD-call timeouts
 
@@ -304,12 +339,14 @@ original, by design — that's the explicit destructive opt-in.
 scripts/auto_crop.py
 scripts/caption_dataset.py
 scripts/remove_background.py
+scripts/remove_watermark.py
 scripts/resize_images.py
 scripts/upscale_images.py
 ui/src/server/imageOps.ts
 ui/src/app/api/datasets/caption/route.ts        # NEW endpoint, replacing inline impl
 ui/src/app/api/datasets/resize/route.ts
 ui/src/app/api/datasets/removeBackground/route.ts
+ui/src/app/api/datasets/removeWatermark/route.ts
 ui/src/app/api/datasets/upscale/route.ts
 ui/src/app/api/datasets/autoCrop/route.ts
 ui/src/app/api/img/bulkDelete/route.ts

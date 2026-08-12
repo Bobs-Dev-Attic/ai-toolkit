@@ -11,6 +11,7 @@ export type ImageOpScript =
   | 'caption_dataset.py'
   | 'resize_images.py'
   | 'remove_background.py'
+  | 'remove_watermark.py'
   | 'upscale_images.py'
   | 'auto_crop.py';
 

@@ -12,6 +12,7 @@ import {
   LuScaling,
   LuImageUpscale,
   LuScissors,
+  LuEraser,
   LuChevronDown,
   LuChevronUp,
   LuRefreshCw,
@@ -87,6 +88,17 @@ interface RemoveBgOptions {
   outputMode: 'replace' | 'sidecar';
 }
 
+interface RemoveWatermarkOptions {
+  model: 'grounding-dino-tiny' | 'grounding-dino-base';
+  text: boolean;
+  watermark: boolean;
+  logo: boolean;
+  prompt: string;
+  threshold: number;
+  dilate: number;
+  outputMode: 'replace' | 'sidecar';
+}
+
 interface UpscaleOptions {
   model: 'x2' | 'x4' | 'x4plus';
   maxSide: number;
@@ -110,6 +122,7 @@ interface AutoCropOptions {
 const MODEL_DOWNLOAD_LABELS: Record<string, string> = {
   caption: 'Downloading BLIP captioning model (one-time)',
   removeBackground: 'Downloading background-removal model (one-time)',
+  removeWatermark: 'Downloading detection + inpainting models (one-time)',
   upscale: 'Downloading Real-ESRGAN upscaler (one-time)',
   autoCrop: 'Downloading detection model (one-time)',
   resize: '',
@@ -119,6 +132,7 @@ const OPERATION_LABELS: Record<string, string> = {
   caption: 'Generating captions',
   resize: 'Resizing',
   removeBackground: 'Removing background',
+  removeWatermark: 'Removing text / watermarks',
   upscale: 'Upscaling',
   autoCrop: 'Auto-cropping',
 };
@@ -147,7 +161,7 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
 
   // Single active op slot - we serialize ops so the progress UI is unambiguous.
   const [activeOp, setActiveOp] = useState<
-    null | 'caption' | 'resize' | 'removeBackground' | 'upscale' | 'autoCrop'
+    null | 'caption' | 'resize' | 'removeBackground' | 'removeWatermark' | 'upscale' | 'autoCrop'
   >(null);
   const [progress, setProgress] = useState<OpProgress>(INITIAL_PROGRESS);
   const [opMessage, setOpMessage] = useState('');
@@ -156,6 +170,7 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
   // Modal visibility
   const [resizeOpen, setResizeOpen] = useState(false);
   const [removeBgOpen, setRemoveBgOpen] = useState(false);
+  const [removeWatermarkOpen, setRemoveWatermarkOpen] = useState(false);
   const [upscaleOpen, setUpscaleOpen] = useState(false);
   const [autoCropOpen, setAutoCropOpen] = useState(false);
   const [captionAdvancedOpen, setCaptionAdvancedOpen] = useState(false);
@@ -179,6 +194,16 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
   const [removeBgOpts, setRemoveBgOpts] = useState<RemoveBgOptions>({
     model: 'u2net',
     bg: 'transparent',
+    outputMode: 'sidecar',
+  });
+  const [removeWatermarkOpts, setRemoveWatermarkOpts] = useState<RemoveWatermarkOptions>({
+    model: 'grounding-dino-tiny',
+    text: true,
+    watermark: true,
+    logo: true,
+    prompt: '',
+    threshold: 0.3,
+    dilate: 6,
     outputMode: 'sidecar',
   });
   const [upscaleOpts, setUpscaleOpts] = useState<UpscaleOptions>({
@@ -264,7 +289,7 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
    * The op label determines what's shown in the progress bar.
    */
   const runStreamingOp = async (
-    op: 'caption' | 'resize' | 'removeBackground' | 'upscale' | 'autoCrop',
+    op: 'caption' | 'resize' | 'removeBackground' | 'removeWatermark' | 'upscale' | 'autoCrop',
     endpoint: string,
     payload: object,
   ) => {
@@ -414,6 +439,24 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
       datasetName,
       images: selectedArray,
       ...removeBgOpts,
+    });
+  };
+
+  const runRemoveWatermark = async () => {
+    setRemoveWatermarkOpen(false);
+    const targets: string[] = [];
+    if (removeWatermarkOpts.text) targets.push('text');
+    if (removeWatermarkOpts.watermark) targets.push('watermark');
+    if (removeWatermarkOpts.logo) targets.push('logo');
+    await runStreamingOp('removeWatermark', '/api/datasets/removeWatermark', {
+      datasetName,
+      images: selectedArray,
+      model: removeWatermarkOpts.model,
+      targets: targets.length ? targets : ['text', 'watermark', 'logo'],
+      prompt: removeWatermarkOpts.prompt,
+      threshold: removeWatermarkOpts.threshold,
+      dilate: removeWatermarkOpts.dilate,
+      outputMode: removeWatermarkOpts.outputMode,
     });
   };
 
@@ -703,6 +746,14 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
               </Button>
               <Button
                 className="flex items-center gap-1 rounded-md border border-gray-600 px-2 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-60"
+                onClick={() => setRemoveWatermarkOpen(true)}
+                disabled={isBusy || !hasSelection}
+              >
+                <LuEraser className="h-3.5 w-3.5" />
+                Remove text/watermark…
+              </Button>
+              <Button
+                className="flex items-center gap-1 rounded-md border border-gray-600 px-2 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-60"
                 onClick={() => setUpscaleOpen(true)}
                 disabled={isBusy || !hasSelection}
               >
@@ -979,6 +1030,137 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
             <Button
               className="rounded-md bg-cyan-700 px-3 py-1.5 text-sm font-medium text-white"
               onClick={runRemoveBackground}
+            >
+              Process {selectedArray.length}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Remove text/watermark modal */}
+      <Modal
+        isOpen={removeWatermarkOpen}
+        onClose={() => setRemoveWatermarkOpen(false)}
+        title="Remove text, watermarks & logos"
+        size="md"
+      >
+        <div className="flex flex-col gap-3 text-sm text-gray-200">
+          <div className="rounded-md border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-400">
+            Detects the selected region types with Grounding DINO and reconstructs the background with LaMa
+            inpainting. Fully local — the models download once.
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-gray-300">What to remove</span>
+            <div className="flex flex-wrap gap-3">
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  className="accent-cyan-500"
+                  checked={removeWatermarkOpts.text}
+                  onChange={e => setRemoveWatermarkOpts(o => ({ ...o, text: e.target.checked }))}
+                />
+                Text
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  className="accent-cyan-500"
+                  checked={removeWatermarkOpts.watermark}
+                  onChange={e => setRemoveWatermarkOpts(o => ({ ...o, watermark: e.target.checked }))}
+                />
+                Watermarks
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  className="accent-cyan-500"
+                  checked={removeWatermarkOpts.logo}
+                  onChange={e => setRemoveWatermarkOpts(o => ({ ...o, logo: e.target.checked }))}
+                />
+                Logos
+              </label>
+            </div>
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-300">Extra phrases to detect (optional)</span>
+            <input
+              type="text"
+              className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5"
+              placeholder="e.g. timestamp, signature, QR code"
+              value={removeWatermarkOpts.prompt}
+              onChange={e => setRemoveWatermarkOpts(o => ({ ...o, prompt: e.target.value }))}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-300">Detection model</span>
+            <select
+              className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5"
+              value={removeWatermarkOpts.model}
+              onChange={e =>
+                setRemoveWatermarkOpts(o => ({ ...o, model: e.target.value as RemoveWatermarkOptions['model'] }))
+              }
+            >
+              <option value="grounding-dino-tiny">Grounding DINO tiny (fast, ~0.7 GB)</option>
+              <option value="grounding-dino-base">Grounding DINO base (more accurate, ~0.9 GB)</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-300">
+              Detection threshold ({removeWatermarkOpts.threshold.toFixed(2)})
+            </span>
+            <input
+              type="range"
+              min={0.1}
+              max={0.6}
+              step={0.05}
+              value={removeWatermarkOpts.threshold}
+              onChange={e => setRemoveWatermarkOpts(o => ({ ...o, threshold: parseFloat(e.target.value) }))}
+              className="accent-cyan-400"
+            />
+            <span className="text-xs text-gray-500">
+              Lower catches fainter/smaller marks but risks erasing wanted detail; higher is more conservative.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-300">Region padding ({removeWatermarkOpts.dilate}px)</span>
+            <input
+              type="range"
+              min={0}
+              max={32}
+              step={1}
+              value={removeWatermarkOpts.dilate}
+              onChange={e => setRemoveWatermarkOpts(o => ({ ...o, dilate: parseInt(e.target.value) }))}
+              className="accent-cyan-400"
+            />
+            <span className="text-xs text-gray-500">Grows each detected region before inpainting to catch soft edges/shadows.</span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-300">Save as</span>
+            <select
+              className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5"
+              value={removeWatermarkOpts.outputMode}
+              onChange={e =>
+                setRemoveWatermarkOpts(o => ({
+                  ...o,
+                  outputMode: e.target.value as RemoveWatermarkOptions['outputMode'],
+                }))
+              }
+            >
+              <option value="sidecar">Sidecar (&lt;name&gt;.clean.png next to original)</option>
+              <option value="replace">Replace original (keeps format)</option>
+            </select>
+          </label>
+          <div className="mt-2 flex justify-end gap-2">
+            <Button
+              className="rounded-md border border-gray-600 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-800"
+              onClick={() => setRemoveWatermarkOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="rounded-md bg-cyan-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+              onClick={runRemoveWatermark}
+              disabled={!removeWatermarkOpts.text && !removeWatermarkOpts.watermark && !removeWatermarkOpts.logo}
             >
               Process {selectedArray.length}
             </Button>
