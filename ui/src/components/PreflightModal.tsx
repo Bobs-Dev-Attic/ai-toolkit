@@ -16,6 +16,9 @@ interface Props {
   // Apply selected suggestions back to the job form. Given a flat list of
   // path/value changes to write. Optional — without it, findings are advisory only.
   onApplyFixes?: (fixes: FindingFix[]) => void;
+  // Verb for the proceed button. 'Create' for the new-job flow (default),
+  // 'Start' for the restart/resume flow. Only the wording changes.
+  confirmVerb?: string;
 }
 
 const levelMeta: Record<FindingLevel, { icon: React.ReactNode; ring: string; text: string; label: string }> = {
@@ -33,7 +36,7 @@ const profileMeta: Record<FindingProfile, { icon: React.ReactNode; badge: string
   safe: { icon: <LuShield />, badge: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30', ring: 'border-emerald-500/50', text: 'text-emerald-300', label: 'Fail-proof' },
 };
 
-export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, onApplyFixes }: Props) {
+export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, onApplyFixes, confirmVerb = 'Create' }: Props) {
   const [loading, setLoading] = useState(false);
   const [hw, setHw] = useState<PreflightHardware | null>(null);
   const [imageCount, setImageCount] = useState<number | null>(null);
@@ -161,7 +164,7 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
   const warnCount = findings.filter(f => f.level === 'warning').length;
   const problemCount = errorCount + warnCount;
 
-  const proceedLabel = errorCount > 0 ? 'Create anyway' : warnCount > 0 ? 'Create anyway' : 'Looks good — Create';
+  const proceedLabel = errorCount > 0 ? `${confirmVerb} anyway` : warnCount > 0 ? `${confirmVerb} anyway` : `Looks good — ${confirmVerb}`;
 
   return (
     <Dialog open={open} onClose={onCancel} className="relative z-50">

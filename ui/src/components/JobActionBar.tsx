@@ -9,6 +9,7 @@ import {
   stopJob,
   deleteJob,
   getAvaliableJobActions,
+  getJobConfig,
   markJobAsStopped,
   saveJobNow,
   sampleJobNow,
@@ -20,6 +21,11 @@ import { redirect } from 'next/navigation';
 import { openCaptionDatasetModal } from '@/components/CaptionDatasetModal';
 import StopJobModal from '@/components/StopJobModal';
 import FolderBrowserModal from '@/components/FolderBrowserModal';
+import PreflightModal from '@/components/PreflightModal';
+import { setNestedValue } from '@/utils/hooks';
+import { apiClient } from '@/utils/api';
+import { JobConfig } from '@/types';
+import { FindingFix } from '@/utils/preflight';
 
 interface JobActionBarProps {
   job: Job;
@@ -45,25 +51,62 @@ export default function JobActionBar({
   const { canStart, canStop, canDelete, canEdit, canRemoveFromQueue } = getAvaliableJobActions(job);
   const [stopOpen, setStopOpen] = useState(false);
   const [copyDestOpen, setCopyDestOpen] = useState(false);
+  // Restart pre-flight: seeded from the job's saved config when the user hits
+  // Play on a training job. restartDirty tracks whether the user applied any
+  // strategy change, so we only re-persist the config when it actually changed.
+  const [preflightOpen, setPreflightOpen] = useState(false);
+  const [restartConfig, setRestartConfig] = useState<JobConfig | null>(null);
+  const [restartDirty, setRestartDirty] = useState(false);
 
   if (!afterDelete) afterDelete = onRefresh;
+
+  // Start (or resume) the job. When `config` is provided, persist it to the
+  // existing job first (POST /api/jobs with the job id updates in place) so the
+  // chosen strategy takes effect on this run; startJob then reads it back.
+  const runStart = async (config: JobConfig | null) => {
+    try {
+      if (config) {
+        await apiClient.post('/api/jobs', {
+          id: job.id,
+          name: job.name,
+          gpu_ids: job.gpu_ids,
+          job_config: config,
+        });
+      }
+      await startJob(job.id);
+      if (autoStartQueue) {
+        await startQueue(job.gpu_ids);
+      }
+    } catch (e) {
+      console.error('Error starting job:', e);
+    } finally {
+      if (onRefresh) onRefresh();
+    }
+  };
+
+  const handleStartClick = () => {
+    if (!canStart) return;
+    // Training jobs get the pre-flight/strategy review; other job types (e.g.
+    // captioning) have nothing to review, so start them directly.
+    if (job.job_type === 'train') {
+      try {
+        setRestartConfig(getJobConfig(job));
+        setRestartDirty(false);
+        setPreflightOpen(true);
+      } catch {
+        // If the config can't be parsed, fall back to starting directly.
+        void runStart(null);
+      }
+    } else {
+      void runStart(null);
+    }
+  };
 
   const iconSizeClass = 'w-5 h-5 sm:w-6 sm:h-6';
   return (
     <div className={`flex items-center flex-shrink-0 ${className ?? ''}`}>
       {canStart && (
-        <Button
-          onClick={async () => {
-            if (!canStart) return;
-            await startJob(job.id);
-            // start the queue as well
-            if (autoStartQueue) {
-              await startQueue(job.gpu_ids);
-            }
-            if (onRefresh) onRefresh();
-          }}
-          className={`ml-1 sm:ml-2 opacity-100`}
-        >
+        <Button onClick={handleStartClick} className={`ml-1 sm:ml-2 opacity-100`}>
           <Play className={iconSizeClass} />
         </Button>
       )}
@@ -101,6 +144,30 @@ export default function JobActionBar({
           if (onRefresh) onRefresh();
         }}
       />
+      {restartConfig && (
+        <PreflightModal
+          open={preflightOpen}
+          jobConfig={restartConfig}
+          confirmVerb="Start"
+          onConfirm={() => {
+            setPreflightOpen(false);
+            // Only re-persist if the user applied a strategy/fix; otherwise start as-is.
+            void runStart(restartDirty ? restartConfig : null);
+          }}
+          onCancel={() => setPreflightOpen(false)}
+          onApplyFixes={(fixes: FindingFix[]) => {
+            setRestartConfig(prev => {
+              if (!prev) return prev;
+              let updated = prev;
+              for (const fix of fixes) {
+                updated = setNestedValue(updated, fix.value, fix.path);
+              }
+              return updated;
+            });
+            setRestartDirty(true);
+          }}
+        />
+      )}
       {!hideView && (
         <Link href={`/jobs/${job.id}`} className="ml-1 sm:ml-2 text-gray-200 hover:text-gray-100 inline-block">
           <Eye className={iconSizeClass} />
