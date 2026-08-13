@@ -4,9 +4,9 @@ import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import { useEffect, useState } from 'react';
 import { JobConfig } from '@/types';
 import { apiClient } from '@/utils/api';
-import { analyzePreflight, Finding, FindingFix, FindingLevel, PreflightHardware } from '@/utils/preflight';
+import { analyzePreflight, Finding, FindingFix, FindingLevel, FindingProfile, PreflightHardware } from '@/utils/preflight';
 import { reviewTrainingConfig } from '@/utils/configReview';
-import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive, LuWandSparkles } from 'react-icons/lu';
+import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive, LuWandSparkles, LuZap, LuSparkles, LuShield } from 'react-icons/lu';
 
 interface Props {
   open: boolean;
@@ -25,6 +25,14 @@ const levelMeta: Record<FindingLevel, { icon: React.ReactNode; ring: string; tex
   ok: { icon: <LuCircleCheck />, ring: 'border-emerald-500/40 bg-emerald-500/5', text: 'text-emerald-400', label: 'OK' },
 };
 
+// Intent chips for mutually-exclusive strategy options. Colour-coded so the
+// user can pick by goal (speed / quality / fail-proof) at a glance.
+const profileMeta: Record<FindingProfile, { icon: React.ReactNode; badge: string; ring: string; text: string; label: string }> = {
+  speed: { icon: <LuZap />, badge: 'bg-amber-500/10 text-amber-300 border-amber-500/30', ring: 'border-amber-500/50', text: 'text-amber-300', label: 'Speed' },
+  quality: { icon: <LuSparkles />, badge: 'bg-violet-500/10 text-violet-300 border-violet-500/30', ring: 'border-violet-500/50', text: 'text-violet-300', label: 'Quality' },
+  safe: { icon: <LuShield />, badge: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30', ring: 'border-emerald-500/50', text: 'text-emerald-300', label: 'Fail-proof' },
+};
+
 export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, onApplyFixes }: Props) {
   const [loading, setLoading] = useState(false);
   const [hw, setHw] = useState<PreflightHardware | null>(null);
@@ -33,6 +41,9 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
   const [err, setErr] = useState<string | null>(null);
   // ids of fixable findings the user has ticked to apply
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // for findings that offer mutually-exclusive options: findingId -> chosen optionId.
+  // Nothing is pre-picked, so an option is applied only when the user chooses it.
+  const [optionChoice, setOptionChoice] = useState<Map<string, string>>(new Map());
 
   // Fetch hardware + dataset image counts once when the modal opens. Kept
   // separate from analysis so applying a fix (which changes jobConfig) re-runs
@@ -43,6 +54,7 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
     setLoading(true);
     setErr(null);
     setSelected(new Set());
+    setOptionChoice(new Map());
 
     Promise.all([
       apiClient.get('/api/gpu').then(r => r.data).catch(() => null),
@@ -114,18 +126,33 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
       const next = new Set([...prev].filter(id => ids.has(id)));
       return next.size === prev.size ? prev : next;
     });
+    // prune option picks whose finding no longer offers options
+    setOptionChoice(prev => {
+      const optionIds = new Set(merged.filter(f => f.options && f.options.length > 0).map(f => f.id));
+      const next = new Map([...prev].filter(([fid]) => optionIds.has(fid)));
+      return next.size === prev.size ? prev : next;
+    });
   }, [open, jobConfig, hw, imageCount]);
 
   const fixable = findings.filter(f => f.fix && f.fix.length > 0);
+  const optionFindings = findings.filter(f => f.options && f.options.length > 0);
   const toggle = (id: string) =>
     setSelected(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+  const chooseOption = (fid: string, oid: string) => setOptionChoice(prev => new Map(prev).set(fid, oid));
+  const selectionCount = selected.size + optionChoice.size;
   const applySelected = () => {
     if (!onApplyFixes) return;
-    const fixes = fixable.filter(f => selected.has(f.id)).flatMap(f => f.fix ?? []);
+    const fixes: FindingFix[] = [
+      ...fixable.filter(f => selected.has(f.id)).flatMap(f => f.fix ?? []),
+      ...optionFindings.flatMap(f => {
+        const chosen = optionChoice.get(f.id);
+        return f.options?.find(o => o.id === chosen)?.fix ?? [];
+      }),
+    ];
     if (fixes.length > 0) onApplyFixes(fixes);
     // selection is pruned by the recompute effect once jobConfig updates
   };
@@ -220,6 +247,47 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
                             )}
                           </div>
                         )}
+                        {f.options && f.options.length > 0 && (
+                          <div className="mt-3 space-y-2">
+                            {f.options.map(o => {
+                              const pm = profileMeta[o.profile];
+                              const chosen = optionChoice.get(f.id) === o.id;
+                              const selectable = !!onApplyFixes;
+                              return (
+                                <label
+                                  key={o.id}
+                                  className={`flex items-start gap-2 rounded-md border p-2 ${selectable ? 'cursor-pointer' : ''} ${
+                                    chosen ? `${pm.ring} bg-gray-800/60 ring-1 ring-inset` : 'border-gray-700/60 hover:border-gray-600'
+                                  }`}
+                                >
+                                  <input
+                                    type="radio"
+                                    name={`opt-${f.id}`}
+                                    checked={chosen}
+                                    disabled={!selectable}
+                                    onChange={() => chooseOption(f.id, o.id)}
+                                    className="mt-1 accent-emerald-500 cursor-pointer"
+                                  />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-wide border rounded px-1 py-0.5 ${pm.badge}`}>
+                                        {pm.icon}
+                                        {pm.label}
+                                      </span>
+                                      <span className="text-gray-100 text-sm font-medium">{o.label}</span>
+                                      {o.recommended && (
+                                        <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">
+                                          Recommended
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs text-gray-400 mt-1 leading-relaxed">{o.detail}</p>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -228,29 +296,33 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
           </div>
 
           {/* Apply-suggestions bar (only when there are applyable findings) */}
-          {!loading && onApplyFixes && fixable.length > 0 && (
+          {!loading && onApplyFixes && (fixable.length > 0 || optionFindings.length > 0) && (
             <div className="px-5 py-2.5 border-t border-gray-800 shrink-0 flex items-center justify-between gap-3 bg-gray-900/60">
-              <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="accent-emerald-500 cursor-pointer"
-                  checked={selected.size === fixable.length && fixable.length > 0}
-                  ref={el => {
-                    if (el) el.indeterminate = selected.size > 0 && selected.size < fixable.length;
-                  }}
-                  onChange={() =>
-                    setSelected(prev => (prev.size === fixable.length ? new Set() : new Set(fixable.map(f => f.id))))
-                  }
-                />
-                Select all applyable ({fixable.length})
-              </label>
+              {fixable.length > 0 ? (
+                <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="accent-emerald-500 cursor-pointer"
+                    checked={selected.size === fixable.length && fixable.length > 0}
+                    ref={el => {
+                      if (el) el.indeterminate = selected.size > 0 && selected.size < fixable.length;
+                    }}
+                    onChange={() =>
+                      setSelected(prev => (prev.size === fixable.length ? new Set() : new Set(fixable.map(f => f.id))))
+                    }
+                  />
+                  Select all applyable ({fixable.length})
+                </label>
+              ) : (
+                <span className="text-xs text-gray-500">Pick a strategy above to apply it.</span>
+              )}
               <button
                 type="button"
                 onClick={applySelected}
-                disabled={selected.size === 0}
+                disabled={selectionCount === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <LuWandSparkles /> Apply {selected.size > 0 ? selected.size : ''} selected
+                <LuWandSparkles /> Apply {selectionCount > 0 ? selectionCount : ''} selected
               </button>
             </div>
           )}

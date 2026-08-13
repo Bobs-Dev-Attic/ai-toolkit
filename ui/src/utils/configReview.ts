@@ -1,5 +1,5 @@
 import { JobConfig } from '@/types';
-import { Finding, PreflightHardware, archSize } from './preflight';
+import { Finding, FindingOption, PreflightHardware, archSize } from './preflight';
 
 // ---------------------------------------------------------------------------
 // Stage A: rules-based training-config review.
@@ -551,56 +551,83 @@ export function reviewTrainingConfig(
     const offloading = !!model?.layer_offloading;
     const large = transformerIsLarge(arch);
 
-    // Large model, transformer quantized, but RAM is ample and offloading is on
-    // (so the transformer lives in CPU RAM, not VRAM). With enough RAM the
-    // quality cost of quantizing the transformer is optional.
-    if (large && model?.quantize && offloading && ramGB > 0) {
-      const ramHeadroom = ramGB * 0.85;
-      if (bf16Weights < ramHeadroom) {
-        findings.push({
-          id: 'hw-quant-headroom',
-          level: 'info',
-          title: 'RAM headroom — bf16 transformer is an option',
-          detail:
-            `This machine has ~${ramGB.toFixed(0)} GB RAM, comfortably more than ${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights, ` +
-            `and layer offloading is on (so the transformer sits in CPU RAM, not VRAM). ` +
-            `Transformer quantization is therefore trading quality for memory you may not need — try quantize off (bf16) for higher-fidelity training. ` +
-            `Keep text-encoder quantization if VRAM (~${vramGB.toFixed(0)} GB) is tight during the encode pass.`,
-          setting: 'model.quantize',
-          current: `true (${model?.qtype ?? 'qfloat8'})`,
-          recommended: 'try false (bf16) with offloading',
-          fix: [{ path: 'config.process[0].model.quantize', value: false }],
-        });
-      }
-    }
+    // Quantization, layer offloading and Low VRAM mode are NOT independent
+    // yes/no knobs — they trade VRAM, speed and fidelity against each other, and
+    // the "right" combination depends on what the user is optimising for.
+    // Emitting them as separate findings produced advice that looked
+    // self-contradictory (one card "quantize on", another "quantize off").
+    // Instead, collapse the decision into ONE finding that offers mutually
+    // exclusive, intent-labelled options; the user picks the profile that
+    // matches their goal and gets a self-consistent set of settings.
+    if (large && vramGB > 0 && ramGB > 0) {
+      const halfTransformer = size.transformerGB * 0.5; // ~qfloat8 resident footprint
+      const vramBudget = vramGB * 0.92;
+      const ramBudget = ramGB * 0.85;
+      // Speed: quantized weights must fit in VRAM alongside ~a few GB of activations.
+      const speedFits = halfTransformer + 4 < vramBudget;
+      // Quality: full bf16 weights must fit in the RAM they're offloaded to.
+      const qualityFits = bf16Weights < ramBudget;
 
-    // Same quality headroom, but offloading is OFF. Here the quantized weights
-    // sit in VRAM and the machine's RAM goes unused. Enabling layer offloading
-    // parks the (bf16) transformer in CPU RAM and streams it to the GPU, which
-    // both uses the spare RAM and frees VRAM — so quantization can be dropped for
-    // higher fidelity without needing the whole model to fit in VRAM. This is the
-    // SAFE direction (enabling offloading only reduces VRAM pressure), unlike
-    // suggesting offloading be turned off, which the note below avoids.
-    if (large && model?.quantize && !offloading && ramGB > 0) {
-      const ramHeadroom = ramGB * 0.85;
-      if (bf16Weights < ramHeadroom) {
-        findings.push({
-          id: 'hw-quant-offload-headroom',
-          level: 'info',
-          title: 'Spare RAM — offload + bf16 for higher fidelity',
+      const options: FindingOption[] = [];
+      if (speedFits) {
+        options.push({
+          id: 'strategy-speed',
+          profile: 'speed',
+          label: 'Fastest — 8-bit in VRAM',
           detail:
-            `Layer offloading is off, so the quantized weights sit in VRAM and this machine's ~${ramGB.toFixed(0)} GB of RAM goes mostly unused during training. ` +
-            `${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights fit comfortably in that RAM, so you can turn layer offloading on — which parks the transformer in CPU RAM and streams it to the GPU — and then drop transformer quantization (bf16) for higher-fidelity training. ` +
-            `Offloading frees VRAM (~${vramGB.toFixed(0)} GB here), so bf16 fits even though the full model would not fit in VRAM unquantized. Trade-off: some speed lost to RAM↔GPU transfer. Raise layer_offloading_transformer_percent if VRAM is still tight.`,
-          setting: 'model.layer_offloading / model.quantize',
-          current: 'layer_offloading=false, quantize=true',
-          recommended: 'offloading on + quantize off (bf16)',
+            `${model?.qtype ?? 'qfloat8'} transformer resident in VRAM, layer offloading and Low VRAM off. ` +
+            `The quantized weights (~${halfTransformer.toFixed(0)} GB) fit in your ${vramGB.toFixed(0)} GB, so nothing streams over PCIe — the highest throughput. Minor quality cost from 8-bit weights.`,
+          recommended: true,
           fix: [
-            { path: 'config.process[0].model.layer_offloading', value: true },
-            { path: 'config.process[0].model.quantize', value: false },
+            { path: 'config.process[0].model.quantize', value: true },
+            { path: 'config.process[0].model.layer_offloading', value: false },
+            { path: 'config.process[0].model.low_vram', value: false },
           ],
         });
       }
+      if (qualityFits) {
+        options.push({
+          id: 'strategy-quality',
+          profile: 'quality',
+          label: 'Highest fidelity — bf16 offloaded',
+          detail:
+            `Full-precision bf16 transformer (no quantization) parked in your ${ramGB.toFixed(0)} GB RAM and streamed to the GPU via layer offloading. ` +
+            `${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights fit that RAM, giving the best likeness — at the cost of some speed lost to RAM↔GPU transfer.`,
+          recommended: !speedFits,
+          fix: [
+            { path: 'config.process[0].model.quantize', value: false },
+            { path: 'config.process[0].model.layer_offloading', value: true },
+            { path: 'config.process[0].model.low_vram', value: false },
+          ],
+        });
+      }
+      options.push({
+        id: 'strategy-safe',
+        profile: 'safe',
+        label: 'Fail-proof — lowest VRAM',
+        detail:
+          `8-bit transformer and text encoder, with layer offloading and Low VRAM mode both on. ` +
+          `The smallest VRAM footprint and the most resistant to out-of-memory crashes on ${vramGB.toFixed(0)} GB — the slowest steps, but the safe fallback if either faster profile OOMs.`,
+        recommended: !speedFits && !qualityFits,
+        fix: [
+          { path: 'config.process[0].model.quantize', value: true },
+          { path: 'config.process[0].model.quantize_te', value: true },
+          { path: 'config.process[0].model.layer_offloading', value: true },
+          { path: 'config.process[0].model.low_vram', value: true },
+        ],
+      });
+
+      findings.push({
+        id: 'hw-memory-strategy',
+        level: 'info',
+        title: 'Memory strategy: speed vs quality vs fail-proof',
+        detail:
+          `Quantization, layer offloading and Low VRAM mode trade VRAM, speed and fidelity against each other on ${size.label} ` +
+          `(~${bf16Weights.toFixed(0)} GB at bf16) given your ${vramGB.toFixed(0)} GB VRAM / ${ramGB.toFixed(0)} GB RAM. ` +
+          `These settings only make sense as a set, so pick the profile that matches your goal — each applies a self-consistent combination.`,
+        setting: 'model.quantize / model.layer_offloading / model.low_vram',
+        options,
+      });
     }
 
     // Latent cache location. cache_latents_to_disk writes latents to disk to

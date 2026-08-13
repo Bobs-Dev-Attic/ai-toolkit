@@ -22,6 +22,26 @@ export interface FindingFix {
   value: unknown;
 }
 
+// Which axis an option optimises for. Drives the coloured chip in the UI so the
+// user can pick by intent rather than by reading every trade-off.
+export type FindingProfile = 'speed' | 'quality' | 'safe';
+
+// One mutually-exclusive strategy within a finding: a self-consistent bundle of
+// config changes tagged with what it optimises for. Unlike a bare `fix` (a
+// single "do this" remedy), options are alternatives — the UI renders them as a
+// radio group and applies only the one chosen. Use options when a setting is a
+// genuine trade-off (memory vs speed vs fidelity) with no single right answer,
+// so the review states the choice instead of emitting several findings that look
+// like they contradict each other.
+export interface FindingOption {
+  id: string;              // unique within the finding
+  profile: FindingProfile; // speed | quality | safe
+  label: string;           // short headline, e.g. "Fastest"
+  detail: string;          // what it changes and the trade-off it makes
+  fix: FindingFix[];       // the changes written when this option is chosen
+  recommended?: boolean;   // the suggested default pick, badged in the UI
+}
+
 export interface Finding {
   id: string;
   level: FindingLevel;
@@ -32,6 +52,9 @@ export interface Finding {
   recommended?: string;
   // When present, the UI offers to apply these changes to the job config.
   fix?: FindingFix[];
+  // Mutually-exclusive strategy choices. When present, the UI renders a radio
+  // group (one pick) instead of a single apply toggle. Alternative to `fix`.
+  options?: FindingOption[];
 }
 
 // ---------------------------------------------------------------------------
