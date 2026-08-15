@@ -539,6 +539,30 @@ export function reviewTrainingConfig(
     }
   }
 
+  // ---- Krea2: conv layers aren't part of the recipe -------------------
+  // Krea 2's SingleStreamDiT LoRA recipe trains linear layers only; the UI
+  // disables the conv section for every krea2 variant. A raw config with a
+  // positive network.conv builds Conv2d adapters (config_modules reads
+  // conv=None as "off"), adding params outside the recipe. Setting conv and
+  // conv_alpha to null disables them cleanly.
+  if (isLora && arch.toLowerCase().includes('krea2') && typeof network?.conv === 'number' && network.conv > 0) {
+    findings.push({
+      id: 'krea2-conv-unused',
+      level: 'warning',
+      title: 'Conv layers are outside the Krea 2 recipe',
+      detail:
+        `network.conv is ${network.conv}, so the trainer builds Conv2d LoRA adapters. Krea 2's recipe trains linear layers only ` +
+        `(the UI hides the conv section for krea2), so these are extra parameters trained off-recipe. Set conv / conv_alpha to null to disable them unless you specifically want conv adapters.`,
+      setting: 'network.conv / network.conv_alpha',
+      current: `conv=${network.conv}, conv_alpha=${network.conv_alpha ?? network.conv}`,
+      recommended: 'null (linear only)',
+      fix: [
+        { path: 'config.process[0].network.conv', value: null },
+        { path: 'config.process[0].network.conv_alpha', value: null },
+      ],
+    });
+  }
+
   // ---- Hardware-aware: quality headroom -------------------------------
   // preflight.ts flags when settings WON'T fit. This is the opposite
   // direction: when the machine has enough headroom to RELAX a
@@ -568,20 +592,27 @@ export function reviewTrainingConfig(
       // Quality: full bf16 weights must fit in the RAM they're offloaded to.
       const qualityFits = bf16Weights < ramBudget;
 
+      // Text embeddings can be cached (encode once, unload the text encoder) in
+      // every profile: it frees VRAM AND removes per-step text-encoder work, and
+      // the captions are static so there's no fidelity cost. It's the single
+      // biggest speed lever, so each goal bundle includes it.
+      const cacheTE = { path: 'config.process[0].train.cache_text_embeddings', value: true };
+
       const options: FindingOption[] = [];
       if (speedFits) {
         options.push({
           id: 'strategy-speed',
           profile: 'speed',
-          label: 'Fastest — 8-bit in VRAM',
+          label: 'Fastest throughput',
           detail:
-            `${model?.qtype ?? 'qfloat8'} transformer resident in VRAM, layer offloading and Low VRAM off. ` +
-            `The quantized weights (~${halfTransformer.toFixed(0)} GB) fit in your ${vramGB.toFixed(0)} GB, so nothing streams over PCIe — the highest throughput. Minor quality cost from 8-bit weights.`,
+            `${model?.qtype ?? 'qfloat8'} transformer resident in VRAM, layer offloading and Low VRAM off, text embeddings cached. ` +
+            `The quantized weights (~${halfTransformer.toFixed(0)} GB) fit your ${vramGB.toFixed(0)} GB, so nothing streams over PCIe and the text encoder is unloaded after caching — the highest throughput. Minor quality cost from 8-bit weights.`,
           recommended: true,
           fix: [
             { path: 'config.process[0].model.quantize', value: true },
             { path: 'config.process[0].model.layer_offloading', value: false },
             { path: 'config.process[0].model.low_vram', value: false },
+            cacheTE,
           ],
         });
       }
@@ -589,24 +620,25 @@ export function reviewTrainingConfig(
         options.push({
           id: 'strategy-quality',
           profile: 'quality',
-          label: 'Highest fidelity — bf16 offloaded',
+          label: 'Highest fidelity',
           detail:
-            `Full-precision bf16 transformer (no quantization) parked in your ${ramGB.toFixed(0)} GB RAM and streamed to the GPU via layer offloading. ` +
+            `Full-precision bf16 transformer (no quantization) parked in your ${ramGB.toFixed(0)} GB RAM and streamed to the GPU via layer offloading, text embeddings cached. ` +
             `${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights fit that RAM, giving the best likeness — at the cost of some speed lost to RAM↔GPU transfer.`,
           recommended: !speedFits,
           fix: [
             { path: 'config.process[0].model.quantize', value: false },
             { path: 'config.process[0].model.layer_offloading', value: true },
             { path: 'config.process[0].model.low_vram', value: false },
+            cacheTE,
           ],
         });
       }
       options.push({
         id: 'strategy-safe',
         profile: 'safe',
-        label: 'Fail-proof — lowest VRAM',
+        label: 'Lowest VRAM',
         detail:
-          `8-bit transformer and text encoder, with layer offloading and Low VRAM mode both on. ` +
+          `8-bit transformer and text encoder, with layer offloading and Low VRAM mode both on, and text embeddings cached. ` +
           `The smallest VRAM footprint and the most resistant to out-of-memory crashes on ${vramGB.toFixed(0)} GB — the slowest steps, but the safe fallback if either faster profile OOMs.`,
         recommended: !speedFits && !qualityFits,
         fix: [
@@ -614,18 +646,19 @@ export function reviewTrainingConfig(
           { path: 'config.process[0].model.quantize_te', value: true },
           { path: 'config.process[0].model.layer_offloading', value: true },
           { path: 'config.process[0].model.low_vram', value: true },
+          cacheTE,
         ],
       });
 
       findings.push({
         id: 'hw-memory-strategy',
         level: 'info',
-        title: 'Memory strategy: speed vs quality vs fail-proof',
+        title: 'Configuration goal: Speed, Quality, or Fail-safe',
         detail:
-          `Quantization, layer offloading and Low VRAM mode trade VRAM, speed and fidelity against each other on ${size.label} ` +
+          `Quantization, layer offloading, Low VRAM mode and text-embedding caching only make sense as a set — together they trade VRAM, speed and fidelity on ${size.label} ` +
           `(~${bf16Weights.toFixed(0)} GB at bf16) given your ${vramGB.toFixed(0)} GB VRAM / ${ramGB.toFixed(0)} GB RAM. ` +
-          `These settings only make sense as a set, so pick the profile that matches your goal — each applies a self-consistent combination.`,
-        setting: 'model.quantize / model.layer_offloading / model.low_vram',
+          `Pick the goal that matches this run; each tab shows exactly which of your current settings it would change.`,
+        setting: 'model.quantize / model.layer_offloading / model.low_vram / train.cache_text_embeddings',
         options,
       });
     }

@@ -28,13 +28,49 @@ const levelMeta: Record<FindingLevel, { icon: React.ReactNode; ring: string; tex
   ok: { icon: <LuCircleCheck />, ring: 'border-emerald-500/40 bg-emerald-500/5', text: 'text-emerald-400', label: 'OK' },
 };
 
-// Intent chips for mutually-exclusive strategy options. Colour-coded so the
-// user can pick by goal (speed / quality / fail-proof) at a glance.
-const profileMeta: Record<FindingProfile, { icon: React.ReactNode; badge: string; ring: string; text: string; label: string }> = {
-  speed: { icon: <LuZap />, badge: 'bg-amber-500/10 text-amber-300 border-amber-500/30', ring: 'border-amber-500/50', text: 'text-amber-300', label: 'Speed' },
-  quality: { icon: <LuSparkles />, badge: 'bg-violet-500/10 text-violet-300 border-violet-500/30', ring: 'border-violet-500/50', text: 'text-violet-300', label: 'Quality' },
-  safe: { icon: <LuShield />, badge: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30', ring: 'border-emerald-500/50', text: 'text-emerald-300', label: 'Fail-proof' },
+// Intent chips for the configuration-goal tabs. Colour-coded so the user can
+// pick by goal (speed / quality / fail-safe) at a glance.
+const profileMeta: Record<FindingProfile, { icon: React.ReactNode; badge: string; ring: string; activeTab: string; text: string; label: string }> = {
+  speed: { icon: <LuZap />, badge: 'bg-amber-500/10 text-amber-300 border-amber-500/30', ring: 'border-amber-500/50', activeTab: 'border-amber-500 text-amber-300', text: 'text-amber-300', label: 'Speed' },
+  quality: { icon: <LuSparkles />, badge: 'bg-violet-500/10 text-violet-300 border-violet-500/30', ring: 'border-violet-500/50', activeTab: 'border-violet-500 text-violet-300', text: 'text-violet-300', label: 'Quality' },
+  safe: { icon: <LuShield />, badge: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30', ring: 'border-emerald-500/50', activeTab: 'border-emerald-500 text-emerald-300', text: 'text-emerald-300', label: 'Fail-safe' },
 };
+
+// Human-readable names for the config paths a strategy profile touches, so the
+// per-tab diff reads in plain language instead of raw dotted paths.
+const settingLabels: Record<string, string> = {
+  'model.quantize': 'Transformer quantization',
+  'model.quantize_te': 'Text-encoder quantization',
+  'model.layer_offloading': 'Layer offloading',
+  'model.low_vram': 'Low VRAM mode',
+  'train.cache_text_embeddings': 'Cache text embeddings',
+};
+
+// Resolve a value at a setNestedValue-style path (e.g. config.process[0].model.quantize).
+function getAtPath(obj: unknown, path: string): unknown {
+  const re = /([^[.\]]+)|\[(\d+)\]/g;
+  let m: RegExpExecArray | null;
+  let cur: any = obj;
+  while ((m = re.exec(path)) !== null) {
+    if (cur == null) return undefined;
+    cur = cur[m[1] !== undefined ? m[1] : Number(m[2])];
+  }
+  return cur;
+}
+
+// Compact display for a config value in the diff.
+function fmtVal(v: unknown): string {
+  if (v === true) return 'on';
+  if (v === false) return 'off';
+  if (v === null || v === undefined) return 'none';
+  return String(v);
+}
+
+// Friendly label for a fix path: the mapped name, else the last path segment.
+function labelForPath(path: string): string {
+  const tail = path.replace(/^config\.process\[0\]\./, '');
+  return settingLabels[tail] ?? tail.split('.').pop() ?? tail;
+}
 
 export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, onApplyFixes, confirmVerb = 'Create' }: Props) {
   const [loading, setLoading] = useState(false);
@@ -129,33 +165,38 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
       const next = new Set([...prev].filter(id => ids.has(id)));
       return next.size === prev.size ? prev : next;
     });
-    // prune option picks whose finding no longer offers options
+    // Default each options-finding's active tab to its recommended profile
+    // (view only — applying is done per-tab, so this never auto-writes anything).
     setOptionChoice(prev => {
-      const optionIds = new Set(merged.filter(f => f.options && f.options.length > 0).map(f => f.id));
-      const next = new Map([...prev].filter(([fid]) => optionIds.has(fid)));
-      return next.size === prev.size ? prev : next;
+      const optionFinds = merged.filter(f => f.options && f.options.length > 0);
+      const ids = new Set(optionFinds.map(f => f.id));
+      const next = new Map([...prev].filter(([fid]) => ids.has(fid)));
+      for (const f of optionFinds) {
+        if (!next.has(f.id)) {
+          const rec = f.options!.find(o => o.recommended) ?? f.options![0];
+          next.set(f.id, rec.id);
+        }
+      }
+      return next;
     });
   }, [open, jobConfig, hw, imageCount]);
 
   const fixable = findings.filter(f => f.fix && f.fix.length > 0);
-  const optionFindings = findings.filter(f => f.options && f.options.length > 0);
   const toggle = (id: string) =>
     setSelected(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-  const chooseOption = (fid: string, oid: string) => setOptionChoice(prev => new Map(prev).set(fid, oid));
-  const selectionCount = selected.size + optionChoice.size;
+  // Which strategy tab is shown for an options-finding (view state only).
+  const selectTab = (fid: string, oid: string) => setOptionChoice(prev => new Map(prev).set(fid, oid));
+  // Apply one strategy profile's whole bundle immediately.
+  const applyProfile = (fixes: FindingFix[]) => {
+    if (onApplyFixes && fixes.length > 0) onApplyFixes(fixes);
+  };
   const applySelected = () => {
     if (!onApplyFixes) return;
-    const fixes: FindingFix[] = [
-      ...fixable.filter(f => selected.has(f.id)).flatMap(f => f.fix ?? []),
-      ...optionFindings.flatMap(f => {
-        const chosen = optionChoice.get(f.id);
-        return f.options?.find(o => o.id === chosen)?.fix ?? [];
-      }),
-    ];
+    const fixes = fixable.filter(f => selected.has(f.id)).flatMap(f => f.fix ?? []);
     if (fixes.length > 0) onApplyFixes(fixes);
     // selection is pruned by the recompute effect once jobConfig updates
   };
@@ -250,47 +291,91 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
                             )}
                           </div>
                         )}
-                        {f.options && f.options.length > 0 && (
-                          <div className="mt-3 space-y-2">
-                            {f.options.map(o => {
-                              const pm = profileMeta[o.profile];
-                              const chosen = optionChoice.get(f.id) === o.id;
-                              const selectable = !!onApplyFixes;
-                              return (
-                                <label
-                                  key={o.id}
-                                  className={`flex items-start gap-2 rounded-md border p-2 ${selectable ? 'cursor-pointer' : ''} ${
-                                    chosen ? `${pm.ring} bg-gray-800/60 ring-1 ring-inset` : 'border-gray-700/60 hover:border-gray-600'
-                                  }`}
-                                >
-                                  <input
-                                    type="radio"
-                                    name={`opt-${f.id}`}
-                                    checked={chosen}
-                                    disabled={!selectable}
-                                    onChange={() => chooseOption(f.id, o.id)}
-                                    className="mt-1 accent-emerald-500 cursor-pointer"
-                                  />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <span className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-wide border rounded px-1 py-0.5 ${pm.badge}`}>
-                                        {pm.icon}
-                                        {pm.label}
+                        {f.options && f.options.length > 0 && (() => {
+                          const active = f.options.find(o => o.id === optionChoice.get(f.id)) ?? f.options[0];
+                          const apm = profileMeta[active.profile];
+                          // Per-setting diff for the active tab: current -> target, mismatches highlighted.
+                          const rows = active.fix.map(fx => {
+                            const current = getAtPath(jobConfig, fx.path);
+                            return { path: fx.path, current, target: fx.value, changed: current !== fx.value };
+                          });
+                          const changedCount = rows.filter(r => r.changed).length;
+                          return (
+                            <div className="mt-3">
+                              {/* Goal tabs */}
+                              <div className="flex gap-1 border-b border-gray-800">
+                                {f.options!.map(o => {
+                                  const pm = profileMeta[o.profile];
+                                  const isActive = o.id === active.id;
+                                  return (
+                                    <button
+                                      key={o.id}
+                                      type="button"
+                                      onClick={() => selectTab(f.id, o.id)}
+                                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                                        isActive ? apm.activeTab : 'border-transparent text-gray-400 hover:text-gray-200'
+                                      }`}
+                                    >
+                                      <span className={isActive ? pm.text : ''}>{pm.icon}</span>
+                                      {pm.label}
+                                      {o.recommended && <span className="text-[9px] uppercase tracking-wide text-emerald-400/80">rec</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {/* Active goal panel */}
+                              <div className="pt-3">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-wide border rounded px-1 py-0.5 ${apm.badge}`}>
+                                    {apm.icon}
+                                    {apm.label}
+                                  </span>
+                                  <span className="text-gray-100 text-sm font-medium">{active.label}</span>
+                                  {active.recommended && (
+                                    <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">
+                                      Recommended
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-gray-400 mt-1 leading-relaxed">{active.detail}</p>
+                                {/* Diff table */}
+                                <div className="mt-2 rounded-md border border-gray-800 divide-y divide-gray-800">
+                                  {rows.map(r => (
+                                    <div key={r.path} className={`flex items-center justify-between gap-3 px-2.5 py-1.5 text-xs ${r.changed ? 'bg-amber-500/5' : ''}`}>
+                                      <span className="text-gray-300">{labelForPath(r.path)}</span>
+                                      <span className="flex items-center gap-1.5 font-mono shrink-0">
+                                        {r.changed ? (
+                                          <>
+                                            <span className="text-amber-300">{fmtVal(r.current)}</span>
+                                            <span className="text-gray-600">→</span>
+                                            <span className={apm.text}>{fmtVal(r.target)}</span>
+                                          </>
+                                        ) : (
+                                          <span className="text-gray-500">{fmtVal(r.current)} <span className="text-emerald-500/70">✓</span></span>
+                                        )}
                                       </span>
-                                      <span className="text-gray-100 text-sm font-medium">{o.label}</span>
-                                      {o.recommended && (
-                                        <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">
-                                          Recommended
-                                        </span>
-                                      )}
                                     </div>
-                                    <p className="text-xs text-gray-400 mt-1 leading-relaxed">{o.detail}</p>
+                                  ))}
+                                </div>
+                                {onApplyFixes && (
+                                  <div className="mt-2 flex items-center justify-between gap-2">
+                                    <span className="text-[11px] text-gray-500">
+                                      {changedCount === 0 ? 'Your config already matches this goal.' : `${changedCount} setting${changedCount > 1 ? 's' : ''} would change.`}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => applyProfile(active.fix)}
+                                      disabled={changedCount === 0}
+                                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      <LuWandSparkles /> Apply {apm.label}
+                                    </button>
                                   </div>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        )}
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -298,34 +383,30 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
               })}
           </div>
 
-          {/* Apply-suggestions bar (only when there are applyable findings) */}
-          {!loading && onApplyFixes && (fixable.length > 0 || optionFindings.length > 0) && (
+          {/* Apply-suggestions bar (single-fix findings; strategy tabs apply via their own button) */}
+          {!loading && onApplyFixes && fixable.length > 0 && (
             <div className="px-5 py-2.5 border-t border-gray-800 shrink-0 flex items-center justify-between gap-3 bg-gray-900/60">
-              {fixable.length > 0 ? (
-                <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="accent-emerald-500 cursor-pointer"
-                    checked={selected.size === fixable.length && fixable.length > 0}
-                    ref={el => {
-                      if (el) el.indeterminate = selected.size > 0 && selected.size < fixable.length;
-                    }}
-                    onChange={() =>
-                      setSelected(prev => (prev.size === fixable.length ? new Set() : new Set(fixable.map(f => f.id))))
-                    }
-                  />
-                  Select all applyable ({fixable.length})
-                </label>
-              ) : (
-                <span className="text-xs text-gray-500">Pick a strategy above to apply it.</span>
-              )}
+              <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="accent-emerald-500 cursor-pointer"
+                  checked={selected.size === fixable.length && fixable.length > 0}
+                  ref={el => {
+                    if (el) el.indeterminate = selected.size > 0 && selected.size < fixable.length;
+                  }}
+                  onChange={() =>
+                    setSelected(prev => (prev.size === fixable.length ? new Set() : new Set(fixable.map(f => f.id))))
+                  }
+                />
+                Select all applyable ({fixable.length})
+              </label>
               <button
                 type="button"
                 onClick={applySelected}
-                disabled={selectionCount === 0}
+                disabled={selected.size === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <LuWandSparkles /> Apply {selectionCount > 0 ? selectionCount : ''} selected
+                <LuWandSparkles /> Apply {selected.size > 0 ? selected.size : ''} selected
               </button>
             </div>
           )}
