@@ -12,6 +12,7 @@ import { openConfirm } from '@/components/ConfirmModal';
 import { TopBar, MainContent } from '@/components/layout';
 import UniversalTable, { TableColumn } from '@/components/UniversalTable';
 import { apiClient } from '@/utils/api';
+import { nextCloneName } from '@/utils/naming';
 import { useRouter } from 'next/navigation';
 import DatasetThumbnailPager from './DatasetThumbnailPager';
 
@@ -219,9 +220,10 @@ export default function Datasets() {
 
   const handleCloneDataset = (datasetName: string) => {
     setMenuOpenFor(null);
+    const suggested = nextCloneName(datasetName, datasets);
     openConfirm({
       title: 'Clone Dataset',
-      message: `Copy all images and captions from "${datasetName}" into a new dataset. Leave the name blank to use "${datasetName}_copy".`,
+      message: `Copy all images and captions from "${datasetName}" into a new dataset. Leave the name blank to use "${suggested}".`,
       type: 'info',
       confirmText: 'Clone',
       inputTitle: 'New Dataset Name (optional)',
@@ -229,7 +231,7 @@ export default function Datasets() {
         try {
           const res = await apiClient.post('/api/datasets/clone', {
             name: datasetName,
-            newName: newName || `${datasetName}_copy`,
+            newName: newName || suggested,
           });
           refreshAll();
           if (res.data?.name) {

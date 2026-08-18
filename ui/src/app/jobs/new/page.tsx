@@ -6,6 +6,7 @@ import { defaultJobConfig, defaultDatasetConfig, migrateJobConfig } from './jobC
 import { jobTypeOptions, modelArchs } from './options';
 import { JobConfig } from '@/types';
 import { objectCopy } from '@/utils/basic';
+import { nextCloneName } from '@/utils/naming';
 import { useNestedState, setNestedValue } from '@/utils/hooks';
 import { SelectInput } from '@/components/formInputs';
 import useSettings from '@/hooks/useSettings';
@@ -171,7 +172,7 @@ export default function TrainingForm() {
           console.log('Clone Training:', data);
           setGpuIDs(data.gpu_ids);
           const newJobConfig = migrateJobConfig(JSON.parse(data.job_config));
-          newJobConfig.config.name = `${newJobConfig.config.name}_copy`;
+          newJobConfig.config.name = nextCloneName(newJobConfig.config.name);
           setJobConfig(newJobConfig);
         })
         .catch(error => console.error('Error fetching training:', error));

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { getDatasetsRoot } from '@/server/settings';
+import { nextCloneName } from '@/utils/naming';
 
 function sanitize(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -31,8 +32,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Dataset '${name}' not found` }, { status: 404 });
     }
 
-    let baseTarget = sanitize(newName || `${name}_copy`);
-    if (!baseTarget) baseTarget = `${name}_copy`;
+    let baseTarget = sanitize(newName || nextCloneName(name));
+    if (!baseTarget) baseTarget = nextCloneName(name);
     let target = baseTarget;
     let suffix = 1;
     while (fs.existsSync(path.join(root, target))) {

@@ -6,6 +6,7 @@ import { useFromNull } from '@/hooks/useFromNull';
 import { CaptionJobConfig } from '@/types';
 import { defaultCaptionJobConfig } from '@/helpers/captionJobConfig';
 import { objectCopy } from '@/utils/basic';
+import { nextCloneName } from '@/utils/naming';
 import { useNestedState } from '@/utils/hooks';
 import { isMac } from '@/helpers/basic';
 import useGPUInfo from '@/hooks/useGPUInfo';
@@ -82,7 +83,7 @@ export const CaptionDatasetModal: React.FC = () => {
         .then(data => {
           setGpuIDs(data.gpu_ids);
           const newJobConfig = JSON.parse(data.job_config);
-          newJobConfig.config.name = `${newJobConfig.config.name}_copy`;
+          newJobConfig.config.name = nextCloneName(newJobConfig.config.name);
           setJobConfig(newJobConfig);
         })
         .catch(error => console.error('Error fetching caption job:', error))
