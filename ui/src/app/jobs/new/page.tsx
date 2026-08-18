@@ -165,14 +165,21 @@ export default function TrainingForm() {
   // clone existing job
   useEffect(() => {
     if (cloneId) {
-      apiClient
-        .get(`/api/jobs?id=${cloneId}`)
-        .then(res => res.data)
-        .then(data => {
+      // Fetch the source job plus the full job list, so the cloned name can
+      // advance to the first free _v<N> instead of colliding on save.
+      Promise.all([
+        apiClient.get(`/api/jobs?id=${cloneId}`).then(res => res.data),
+        apiClient
+          .get('/api/jobs')
+          .then(res => (res.data?.jobs ?? []) as Array<{ name: string }>)
+          .catch(() => [] as Array<{ name: string }>),
+      ])
+        .then(([data, jobs]) => {
           console.log('Clone Training:', data);
           setGpuIDs(data.gpu_ids);
           const newJobConfig = migrateJobConfig(JSON.parse(data.job_config));
-          newJobConfig.config.name = nextCloneName(newJobConfig.config.name);
+          const taken = jobs.map(j => j.name).filter(Boolean);
+          newJobConfig.config.name = nextCloneName(newJobConfig.config.name, taken);
           setJobConfig(newJobConfig);
         })
         .catch(error => console.error('Error fetching training:', error));

@@ -77,13 +77,20 @@ export const CaptionDatasetModal: React.FC = () => {
   // clone existing caption job
   useEffect(() => {
     if (modalInfo?.cloneId) {
-      apiClient
-        .get(`/api/jobs?id=${modalInfo.cloneId}`)
-        .then(res => res.data)
-        .then(data => {
+      // Also pull existing caption-job names so the clone advances to a free
+      // _v<N> rather than colliding on save.
+      Promise.all([
+        apiClient.get(`/api/jobs?id=${modalInfo.cloneId}`).then(res => res.data),
+        apiClient
+          .get('/api/jobs?job_type=caption')
+          .then(res => (res.data?.jobs ?? []) as Array<{ name: string }>)
+          .catch(() => [] as Array<{ name: string }>),
+      ])
+        .then(([data, jobs]) => {
           setGpuIDs(data.gpu_ids);
           const newJobConfig = JSON.parse(data.job_config);
-          newJobConfig.config.name = nextCloneName(newJobConfig.config.name);
+          const taken = jobs.map(j => j.name).filter(Boolean);
+          newJobConfig.config.name = nextCloneName(newJobConfig.config.name, taken);
           setJobConfig(newJobConfig);
         })
         .catch(error => console.error('Error fetching caption job:', error))
