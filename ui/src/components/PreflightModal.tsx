@@ -6,7 +6,15 @@ import { JobConfig } from '@/types';
 import { apiClient } from '@/utils/api';
 import { analyzePreflight, Finding, FindingFix, FindingLevel, FindingProfile, PreflightHardware } from '@/utils/preflight';
 import { reviewTrainingConfig } from '@/utils/configReview';
-import { estimateTraining, formatDuration } from '@/utils/trainingEstimate';
+import {
+  estimateTraining,
+  formatDuration,
+  archFamily,
+  calibrateBaseByArch,
+  parseSpeedString,
+  ArchCalibration,
+  CalibrationSample,
+} from '@/utils/trainingEstimate';
 import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive, LuWandSparkles, LuZap, LuSparkles, LuShield, LuClock } from 'react-icons/lu';
 
 interface Props {
@@ -73,6 +81,42 @@ function labelForPath(path: string): string {
   return settingLabels[tail] ?? tail.split('.').pop() ?? tail;
 }
 
+// Turn past job rows into time-model calibration samples: training jobs with a
+// parseable speed reading that have run past warm-up.
+function buildCalibrationSamples(jobs: any[]): CalibrationSample[] {
+  const out: CalibrationSample[] = [];
+  for (const job of jobs ?? []) {
+    if (job?.job_type === 'caption') continue;
+    const observed = parseSpeedString(job?.speed_string);
+    if (observed == null) continue;
+    if ((job?.step ?? 0) < 10) continue; // skip warm-up / compile noise
+    let cfg: any;
+    try {
+      cfg = JSON.parse(job.job_config);
+    } catch {
+      continue;
+    }
+    const p = cfg?.config?.process?.[0];
+    const model = p?.model;
+    const train = p?.train;
+    if (!model || !train) continue;
+    const datasets: any[] = p.datasets ?? [];
+    const resolutionPx = Math.max(512, ...datasets.flatMap((d: any) => d.resolution ?? [512]));
+    out.push({
+      arch: model.arch ?? '',
+      resolutionPx,
+      batchSize: train.batch_size ?? 1,
+      gradientAccumulation: train.gradient_accumulation ?? 1,
+      quantize: !!model.quantize,
+      layerOffloading: !!model.layer_offloading,
+      lowVram: !!model.low_vram,
+      cacheTextEmbeddings: !!train.cache_text_embeddings,
+      observedSecPerStep: observed,
+    });
+  }
+  return out;
+}
+
 export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, onApplyFixes, confirmVerb = 'Create' }: Props) {
   const [loading, setLoading] = useState(false);
   const [hw, setHw] = useState<PreflightHardware | null>(null);
@@ -84,6 +128,9 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
   // for findings that offer mutually-exclusive options: findingId -> chosen optionId.
   // Nothing is pre-picked, so an option is applied only when the user chooses it.
   const [optionChoice, setOptionChoice] = useState<Map<string, string>>(new Map());
+  // Per-arch training-speed base measured from this machine's past runs, used to
+  // calibrate the time estimates. Empty until telemetry loads / if none exists.
+  const [calibration, setCalibration] = useState<Record<string, ArchCalibration>>({});
 
   // Fetch hardware + dataset image counts once when the modal opens. Kept
   // separate from analysis so applying a fix (which changes jobConfig) re-runs
@@ -95,15 +142,21 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
     setErr(null);
     setSelected(new Set());
     setOptionChoice(new Map());
+    setCalibration({});
 
     Promise.all([
       apiClient.get('/api/gpu').then(r => r.data).catch(() => null),
       apiClient.get('/api/cpu').then(r => r.data).catch(() => null),
       apiClient.get('/api/disk').then(r => r.data).catch(() => null),
       apiClient.get('/api/datasets/stats').then(r => r.data).catch(() => null),
+      apiClient.get('/api/jobs').then(r => (r.data?.jobs ?? []) as any[]).catch(() => [] as any[]),
     ])
-      .then(([gpu, cpu, disk, dsStats]) => {
+      .then(([gpu, cpu, disk, dsStats, jobs]) => {
         if (cancelled) return;
+
+        // Calibrate the time model from this machine's own past runs: recover
+        // each run's per-arch base from its observed s/it, keyed by arch family.
+        setCalibration(calibrateBaseByArch(buildCalibrationSamples(jobs)));
         const hardware: PreflightHardware = {
           gpus: (gpu?.gpus ?? []).map((g: any) => ({
             name: g.name,
@@ -282,17 +335,21 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
     };
     const resolutionPx = Math.max(512, ...datasets.flatMap(d => d.resolution ?? [512]));
     const steps = train.steps ?? 0;
-    const est = estimateTraining({
-      arch: model.arch ?? '',
-      resolutionPx,
-      batchSize: train.batch_size ?? 1,
-      gradientAccumulation: train.gradient_accumulation ?? 1,
-      quantize: !!effVal('config.process[0].model.quantize', model.quantize),
-      layerOffloading: !!effVal('config.process[0].model.layer_offloading', model.layer_offloading),
-      lowVram: !!effVal('config.process[0].model.low_vram', model.low_vram),
-      cacheTextEmbeddings: !!effVal('config.process[0].train.cache_text_embeddings', train.cache_text_embeddings),
-      steps,
-    });
+    const cal = calibration[archFamily(model.arch ?? '')];
+    const est = estimateTraining(
+      {
+        arch: model.arch ?? '',
+        resolutionPx,
+        batchSize: train.batch_size ?? 1,
+        gradientAccumulation: train.gradient_accumulation ?? 1,
+        quantize: !!effVal('config.process[0].model.quantize', model.quantize),
+        layerOffloading: !!effVal('config.process[0].model.layer_offloading', model.layer_offloading),
+        lowVram: !!effVal('config.process[0].model.low_vram', model.low_vram),
+        cacheTextEmbeddings: !!effVal('config.process[0].train.cache_text_embeddings', train.cache_text_embeddings),
+        steps,
+      },
+      cal?.base,
+    );
 
     const rows = active.fix.map(fx => {
       const current = getAtPath(jobConfig, fx.path);
@@ -338,7 +395,16 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
             <div className="text-right text-xs text-gray-500 leading-relaxed">
               ≈ {est.secPerStep.toFixed(1)} s/it × {steps.toLocaleString()} steps
               <br />
-              <span className="text-gray-600">at {resolutionPx}px · rough estimate</span>
+              <span className="text-gray-600">
+                at {resolutionPx}px ·{' '}
+                {cal ? (
+                  <span className="text-emerald-500/80" title="Calibrated from this machine's past runs of the same architecture">
+                    calibrated from {cal.samples} past run{cal.samples > 1 ? 's' : ''}
+                  </span>
+                ) : (
+                  'rough estimate'
+                )}
+              </span>
             </div>
           </div>
 

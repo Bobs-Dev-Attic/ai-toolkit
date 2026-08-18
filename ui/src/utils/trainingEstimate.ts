@@ -1,14 +1,17 @@
-// Rough per-step training-time model for the pre-flight goal tabs.
+// Per-step training-time model for the pre-flight goal tabs.
 //
-// IMPORTANT: absolute numbers are approximate (±30% or worse across GPUs). The
-// model is calibrated against one real data point on a 32 GB Blackwell-class
-// card — Krea 2 @ 512px, 8-bit + layer offloading + Low VRAM, uncached text
-// embeddings measured ~2.08 s/it. The RELATIVE ordering between Speed / Quality
-// / Fail-safe is far more reliable than the absolute totals, which is the point:
-// the tabs let the user compare profiles, not trust a number to the minute.
+// The model is `secPerStep = base(arch) * stepMultiplier(profile)`. The
+// multiplier captures the RELATIVE cost of resolution / offloading / precision /
+// low-VRAM / TE-cache / batch; `base` is the per-arch anchor for one step at
+// 512px, batch 1, quantized-and-resident, on THIS machine.
+//
+// `base` starts from a hardcoded default (calibrated to a 32 GB Blackwell card)
+// but is overridden by `calibrateBaseByArch()` whenever the machine has real
+// past-run telemetry: each past run's observed s/it is divided by its own
+// multiplier to recover the machine's true base, and the median is used. That
+// turns "rough estimate" into a measured one for arches the user has trained.
 
-export interface EstimateInput {
-  arch: string;
+export interface StepFactors {
   resolutionPx: number; // longest training edge (max across datasets)
   batchSize: number;
   gradientAccumulation: number;
@@ -16,6 +19,10 @@ export interface EstimateInput {
   layerOffloading: boolean;
   lowVram: boolean;
   cacheTextEmbeddings: boolean;
+}
+
+export interface EstimateInput extends StepFactors {
+  arch: string;
   steps: number;
 }
 
@@ -24,36 +31,103 @@ export interface Estimate {
   totalSeconds: number;
 }
 
-// Baseline seconds/step for a quantized, VRAM-resident transformer at 512px,
-// batch 1, on the reference GPU. Per-arch; large-model default otherwise.
-function baseSecPerStep(arch: string): number {
-  const a = (arch || '').toLowerCase();
-  if (a.includes('krea2')) return 1.05; // calibrated: fail-safe@512 -> ~2.05 s/it (observed 2.08)
-  if (a.includes('minimax')) return 1.2;
-  if (a.includes('qwen')) return 1.0;
-  if (a.includes('flux2') || a.includes('klein')) return 0.85;
-  if (a.includes('flux')) return 0.8;
-  if (a.includes('wan')) return 1.2;
-  return 0.9;
-}
-
 const SETUP_SECONDS = 120; // one-off model load + quantization pass
 
-export function estimateTraining(inp: EstimateInput): Estimate {
-  const base = baseSecPerStep(inp.arch);
-  // Compute scales roughly with token count (~pixel area) at 512 reference.
-  const resFactor = Math.pow(Math.max(inp.resolutionPx, 256) / 512, 2);
-  const offloadFactor = inp.layerOffloading ? 1.6 : 1.0; // PCIe streaming penalty
-  const lowVramFactor = inp.lowVram ? 1.1 : 1.0;
-  const precisionFactor = inp.quantize ? 1.0 : 1.15; // bf16 moves ~2x weight data
-  const teFactor = inp.cacheTextEmbeddings ? 1.0 : 1.15; // text encoder runs each step if uncached
-  const workFactor = Math.max(1, inp.batchSize) * Math.max(1, inp.gradientAccumulation);
+// Family key so arch variants (krea2 / krea2:turbo …) share one calibration.
+export function archFamily(arch: string): string {
+  const a = (arch || '').toLowerCase();
+  if (a.includes('krea2')) return 'krea2';
+  if (a.includes('minimax')) return 'minimax';
+  if (a.includes('qwen')) return 'qwen';
+  if (a.includes('flux2') || a.includes('klein')) return 'flux2';
+  if (a.includes('flux')) return 'flux';
+  if (a.includes('wan')) return 'wan';
+  return a || 'other';
+}
 
-  const secPerStep = base * resFactor * offloadFactor * lowVramFactor * precisionFactor * teFactor * workFactor;
+// Hardcoded fallback base (s/step at 512px, quantized-resident, batch 1).
+function defaultBase(arch: string): number {
+  switch (archFamily(arch)) {
+    case 'krea2':
+      return 1.05; // calibrated: fail-safe@512 -> ~2.05 s/it (observed 2.08)
+    case 'minimax':
+      return 1.2;
+    case 'qwen':
+      return 1.0;
+    case 'flux2':
+      return 0.85;
+    case 'flux':
+      return 0.8;
+    case 'wan':
+      return 1.2;
+    default:
+      return 0.9;
+  }
+}
+
+// Product of every factor except the per-arch base. Compute scales ~ with token
+// count (pixel area) at 512 reference; the rest are measured penalties.
+export function stepMultiplier(f: StepFactors): number {
+  const resFactor = Math.pow(Math.max(f.resolutionPx, 256) / 512, 2);
+  const offloadFactor = f.layerOffloading ? 1.6 : 1.0; // PCIe streaming penalty
+  const lowVramFactor = f.lowVram ? 1.1 : 1.0;
+  const precisionFactor = f.quantize ? 1.0 : 1.15; // bf16 moves ~2x weight data
+  const teFactor = f.cacheTextEmbeddings ? 1.0 : 1.15; // text encoder runs each step if uncached
+  const workFactor = Math.max(1, f.batchSize) * Math.max(1, f.gradientAccumulation);
+  return resFactor * offloadFactor * lowVramFactor * precisionFactor * teFactor * workFactor;
+}
+
+export function estimateTraining(inp: EstimateInput, calibratedBase?: number | null): Estimate {
+  const base = calibratedBase && calibratedBase > 0 ? calibratedBase : defaultBase(inp.arch);
+  const secPerStep = base * stepMultiplier(inp);
   return {
     secPerStep,
     totalSeconds: SETUP_SECONDS + secPerStep * Math.max(0, inp.steps),
   };
+}
+
+// ---- Calibration from past-run telemetry --------------------------------
+
+export interface CalibrationSample extends StepFactors {
+  arch: string;
+  observedSecPerStep: number; // parsed from a past run's speed_string
+}
+
+export interface ArchCalibration {
+  base: number; // median implied base for this arch family
+  samples: number; // how many runs contributed
+}
+
+// speed_string is "X.XX iter/sec" or "X.XX sec/iter"
+// (DiffusionTrainer.handle_timing_print_hook). Parse to seconds/iter.
+export function parseSpeedString(speedString: string | null | undefined): number | null {
+  if (!speedString) return null;
+  const m = speedString.match(/([\d.]+)\s*(iter\/sec|sec\/iter)/);
+  if (!m) return null;
+  const val = parseFloat(m[1]);
+  if (!Number.isFinite(val) || val <= 0) return null;
+  return m[2] === 'iter/sec' ? 1 / val : val;
+}
+
+// Recover each machine's true per-arch base from real runs: base = observed /
+// multiplier. Median over same-family runs, ignoring implausible values.
+export function calibrateBaseByArch(samples: CalibrationSample[]): Record<string, ArchCalibration> {
+  const byFamily: Record<string, number[]> = {};
+  for (const s of samples) {
+    const mult = stepMultiplier(s);
+    if (!(mult > 0) || !(s.observedSecPerStep > 0)) continue;
+    const implied = s.observedSecPerStep / mult;
+    if (!(implied >= 0.02) || implied > 60) continue; // reject garbage/outliers
+    (byFamily[archFamily(s.arch)] ??= []).push(implied);
+  }
+  const out: Record<string, ArchCalibration> = {};
+  for (const [family, arr] of Object.entries(byFamily)) {
+    arr.sort((a, b) => a - b);
+    const mid = Math.floor(arr.length / 2);
+    const median = arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
+    out[family] = { base: median, samples: arr.length };
+  }
+  return out;
 }
 
 // "3h 12m" / "45m" / "30s"
