@@ -18,6 +18,7 @@ import {
   LuRefreshCw,
   LuLayoutGrid,
   LuCrop,
+  LuPencil,
 } from 'react-icons/lu';
 import { FaChevronLeft } from 'react-icons/fa';
 import DatasetImageCard from '@/components/DatasetImageCard';
@@ -105,6 +106,23 @@ interface UpscaleOptions {
   outputMode: 'replace' | 'sidecar';
 }
 
+type RenameDelimiter = 'underscore' | 'hyphen' | 'space' | 'dot' | 'none';
+
+interface RenameOptions {
+  prefix: string;
+  delimiter: RenameDelimiter;
+  padding: number; // digits of zero-padding; 0 = no padding
+  start: number;
+}
+
+const DELIM_CHAR: Record<RenameDelimiter, string> = {
+  underscore: '_',
+  hyphen: '-',
+  space: ' ',
+  dot: '.',
+  none: '',
+};
+
 interface AutoCropOptions {
   target: 'face' | 'upper_body' | 'torso' | 'person';
   padding: number;
@@ -174,6 +192,14 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
   const [upscaleOpen, setUpscaleOpen] = useState(false);
   const [autoCropOpen, setAutoCropOpen] = useState(false);
   const [captionAdvancedOpen, setCaptionAdvancedOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameOpts, setRenameOpts] = useState<RenameOptions>({
+    prefix: '',
+    delimiter: 'underscore',
+    padding: 3,
+    start: 1,
+  });
 
   const [captionOpts, setCaptionOpts] = useState<CaptionOptions>({
     triggerWord: '',
@@ -269,6 +295,11 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
   );
 
   const selectedArray = useMemo(() => Array.from(selected), [selected]);
+  // Selection in on-screen (sorted) order, so rename numbering is predictable.
+  const orderedSelection = useMemo(
+    () => imgList.map(i => i.img_path).filter(p => selected.has(p)),
+    [imgList, selected],
+  );
   const isBusy = activeOp !== null;
   const hasSelection = selectedArray.length > 0;
 
@@ -504,6 +535,44 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
     });
   };
 
+  // Build the new base name (no extension) for the Nth file in the selection,
+  // mirroring the server so the preview is exact.
+  const renamePreviewBase = (index: number) => {
+    const n = renameOpts.start + index;
+    const numStr = renameOpts.padding > 0 ? String(n).padStart(renameOpts.padding, '0') : String(n);
+    const clean = renameOpts.prefix.replace(/[<>:"/\\|?*]/g, '').replace(/^[.\s]+|[.\s]+$/g, '');
+    return `${clean}${DELIM_CHAR[renameOpts.delimiter]}${numStr}`;
+  };
+  const extOf = (p: string) => {
+    const i = p.lastIndexOf('.');
+    return i >= 0 ? p.slice(i) : '';
+  };
+
+  const runRename = async () => {
+    if (!renameOpts.prefix.trim() || orderedSelection.length === 0) return;
+    setRenaming(true);
+    try {
+      const res = await apiClient.post('/api/datasets/renameFiles', {
+        imgPaths: orderedSelection,
+        prefix: renameOpts.prefix,
+        delimiter: renameOpts.delimiter,
+        padding: renameOpts.padding,
+        start: renameOpts.start,
+      });
+      const renamed = res.data?.renamed ?? 0;
+      setOpMessage(`Renamed ${renamed} file${renamed === 1 ? '' : 's'} (and their captions).`);
+      setOpMessageKind('info');
+      setRenameOpen(false);
+      refreshImageList(datasetName);
+      clearSelection();
+    } catch (err: any) {
+      setOpMessage(err?.response?.data?.error || 'Failed to rename files.');
+      setOpMessageKind('error');
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   const PageInfoContent = useMemo(() => {
     if (status === 'loading') {
       return (
@@ -730,6 +799,14 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
               </Button>
               <Button
                 className="flex items-center gap-1 rounded-md border border-gray-600 px-2 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-60"
+                onClick={() => setRenameOpen(true)}
+                disabled={isBusy || !hasSelection}
+              >
+                <LuPencil className="h-3.5 w-3.5" />
+                Rename…
+              </Button>
+              <Button
+                className="flex items-center gap-1 rounded-md border border-gray-600 px-2 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-60"
                 onClick={() => setResizeOpen(true)}
                 disabled={isBusy || !hasSelection}
               >
@@ -845,6 +922,116 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
       </MainContent>
       <AddImagesModal />
       {FloatingProgress}
+
+      {/* Rename modal */}
+      <Modal isOpen={renameOpen} onClose={() => setRenameOpen(false)} title="Rename selected files" size="md">
+        <div className="flex flex-col gap-3 text-sm text-gray-200">
+          <div className="rounded-md border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-400">
+            Renames the {orderedSelection.length} selected file{orderedSelection.length === 1 ? '' : 's'} in on-screen
+            order to <span className="text-gray-200">prefix</span> + delimiter + number, keeping each file&apos;s
+            extension. Matching caption <span className="font-mono">.txt</span> files are renamed alongside.
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-300">Prefix</span>
+            <input
+              className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 outline-none focus:border-cyan-400"
+              value={renameOpts.prefix}
+              onChange={e => setRenameOpts(o => ({ ...o, prefix: e.target.value }))}
+              placeholder="e.g. katiedarling"
+              autoFocus
+            />
+          </label>
+          <div className="grid grid-cols-3 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-gray-300">Delimiter</span>
+              <select
+                className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5"
+                value={renameOpts.delimiter}
+                onChange={e => setRenameOpts(o => ({ ...o, delimiter: e.target.value as RenameDelimiter }))}
+              >
+                <option value="underscore">Underscore _</option>
+                <option value="hyphen">Hyphen -</option>
+                <option value="space">Space</option>
+                <option value="dot">Dot .</option>
+                <option value="none">None</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-gray-300">Numbering</span>
+              <select
+                className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5"
+                value={renameOpts.padding}
+                onChange={e => setRenameOpts(o => ({ ...o, padding: parseInt(e.target.value, 10) }))}
+              >
+                <option value={0}>1, 2, 3…</option>
+                <option value={2}>01, 02, 03…</option>
+                <option value={3}>001, 002, 003…</option>
+                <option value={4}>0001, 0002…</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-gray-300">Start at</span>
+              <input
+                type="number"
+                className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5"
+                value={renameOpts.start}
+                onChange={e => setRenameOpts(o => ({ ...o, start: parseInt(e.target.value, 10) || 0 }))}
+              />
+            </label>
+          </div>
+
+          {/* Live preview */}
+          <div className="rounded-md border border-gray-700 bg-gray-950/40 px-3 py-2">
+            <div className="mb-1 text-[11px] uppercase tracking-wide text-gray-500">Preview</div>
+            {renameOpts.prefix.trim() === '' ? (
+              <div className="text-xs text-gray-500">Enter a prefix to preview the new names.</div>
+            ) : (
+              <div className="flex flex-col gap-0.5 font-mono text-xs">
+                {(() => {
+                  const total = orderedSelection.length;
+                  const idxs = total <= 4 ? [...Array(total).keys()] : [0, 1, -1, total - 1];
+                  return idxs.map((i, k) => {
+                    if (i === -1) {
+                      return (
+                        <div key="ellipsis" className="text-gray-600">
+                          …
+                        </div>
+                      );
+                    }
+                    const from = orderedSelection[i].split(/[/\\]/).pop();
+                    const to = renamePreviewBase(i) + extOf(orderedSelection[i]);
+                    return (
+                      <div key={k} className="flex items-center gap-2">
+                        <span className="truncate text-gray-500">{from}</span>
+                        <span className="text-gray-600">→</span>
+                        <span className="text-cyan-300">{to}</span>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-2 flex justify-end gap-2">
+            <Button
+              className="rounded-md border border-gray-600 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-800"
+              onClick={() => setRenameOpen(false)}
+              disabled={renaming}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="flex items-center gap-1.5 rounded-md bg-cyan-700 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={runRename}
+              disabled={renaming || renameOpts.prefix.trim() === '' || orderedSelection.length === 0}
+            >
+              {renaming ? <LuLoader className="h-4 w-4 animate-spin" /> : <LuPencil className="h-4 w-4" />}
+              Rename {orderedSelection.length}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Resize modal */}
       <Modal isOpen={resizeOpen} onClose={() => setResizeOpen(false)} title="Resize selected images" size="md">
