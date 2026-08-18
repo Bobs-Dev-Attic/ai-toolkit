@@ -40,6 +40,10 @@ export interface FindingOption {
   detail: string;          // what it changes and the trade-off it makes
   fix: FindingFix[];       // the changes written when this option is chosen
   recommended?: boolean;   // the suggested default pick, badged in the UI
+  // Feasibility caveat for this profile on the detected machine (e.g. "may
+  // exceed your 32 GB VRAM"). Present = the profile is risky; the UI warns and
+  // blocks apply. Absent = the profile fits.
+  note?: string;
 }
 
 export interface Finding {

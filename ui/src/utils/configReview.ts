@@ -598,57 +598,59 @@ export function reviewTrainingConfig(
       // biggest speed lever, so each goal bundle includes it.
       const cacheTE = { path: 'config.process[0].train.cache_text_embeddings', value: true };
 
-      const options: FindingOption[] = [];
-      if (speedFits) {
-        options.push({
+      // All three goals are always offered as tabs; a `note` marks one that may
+      // not fit this machine (the UI warns and blocks its apply) rather than
+      // hiding it, so the speed/quality/fail-safe comparison is always complete.
+      const options: FindingOption[] = [
+        {
           id: 'strategy-speed',
           profile: 'speed',
           label: 'Fastest throughput',
           detail:
             `${model?.qtype ?? 'qfloat8'} transformer resident in VRAM, layer offloading and Low VRAM off, text embeddings cached. ` +
             `The quantized weights (~${halfTransformer.toFixed(0)} GB) fit your ${vramGB.toFixed(0)} GB, so nothing streams over PCIe and the text encoder is unloaded after caching — the highest throughput. Minor quality cost from 8-bit weights.`,
-          recommended: true,
+          recommended: speedFits,
+          note: speedFits ? undefined : `The 8-bit transformer (~${halfTransformer.toFixed(0)} GB) plus activations may exceed your ${vramGB.toFixed(0)} GB VRAM — risk of OOM. Prefer Fail-safe.`,
           fix: [
             { path: 'config.process[0].model.quantize', value: true },
             { path: 'config.process[0].model.layer_offloading', value: false },
             { path: 'config.process[0].model.low_vram', value: false },
             cacheTE,
           ],
-        });
-      }
-      if (qualityFits) {
-        options.push({
+        },
+        {
           id: 'strategy-quality',
           profile: 'quality',
           label: 'Highest fidelity',
           detail:
             `Full-precision bf16 transformer (no quantization) parked in your ${ramGB.toFixed(0)} GB RAM and streamed to the GPU via layer offloading, text embeddings cached. ` +
             `${size.label}'s ~${bf16Weights.toFixed(0)} GB of weights fit that RAM, giving the best likeness — at the cost of some speed lost to RAM↔GPU transfer.`,
-          recommended: !speedFits,
+          recommended: false,
+          note: qualityFits ? undefined : `${size.label}'s ~${bf16Weights.toFixed(0)} GB bf16 weights may not fit your ${ramGB.toFixed(0)} GB RAM — loading could be killed. Prefer Speed or Fail-safe.`,
           fix: [
             { path: 'config.process[0].model.quantize', value: false },
             { path: 'config.process[0].model.layer_offloading', value: true },
             { path: 'config.process[0].model.low_vram', value: false },
             cacheTE,
           ],
-        });
-      }
-      options.push({
-        id: 'strategy-safe',
-        profile: 'safe',
-        label: 'Lowest VRAM',
-        detail:
-          `8-bit transformer and text encoder, with layer offloading and Low VRAM mode both on, and text embeddings cached. ` +
-          `The smallest VRAM footprint and the most resistant to out-of-memory crashes on ${vramGB.toFixed(0)} GB — the slowest steps, but the safe fallback if either faster profile OOMs.`,
-        recommended: !speedFits && !qualityFits,
-        fix: [
-          { path: 'config.process[0].model.quantize', value: true },
-          { path: 'config.process[0].model.quantize_te', value: true },
-          { path: 'config.process[0].model.layer_offloading', value: true },
-          { path: 'config.process[0].model.low_vram', value: true },
-          cacheTE,
-        ],
-      });
+        },
+        {
+          id: 'strategy-safe',
+          profile: 'safe',
+          label: 'Lowest VRAM',
+          detail:
+            `8-bit transformer and text encoder, with layer offloading and Low VRAM mode both on, and text embeddings cached. ` +
+            `The smallest VRAM footprint and the most resistant to out-of-memory crashes on ${vramGB.toFixed(0)} GB — the slowest steps, but the safe fallback if either faster profile OOMs.`,
+          recommended: !speedFits,
+          fix: [
+            { path: 'config.process[0].model.quantize', value: true },
+            { path: 'config.process[0].model.quantize_te', value: true },
+            { path: 'config.process[0].model.layer_offloading', value: true },
+            { path: 'config.process[0].model.low_vram', value: true },
+            cacheTE,
+          ],
+        },
+      ];
 
       findings.push({
         id: 'hw-memory-strategy',

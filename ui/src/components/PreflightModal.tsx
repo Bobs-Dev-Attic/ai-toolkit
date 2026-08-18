@@ -6,7 +6,8 @@ import { JobConfig } from '@/types';
 import { apiClient } from '@/utils/api';
 import { analyzePreflight, Finding, FindingFix, FindingLevel, FindingProfile, PreflightHardware } from '@/utils/preflight';
 import { reviewTrainingConfig } from '@/utils/configReview';
-import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive, LuWandSparkles, LuZap, LuSparkles, LuShield } from 'react-icons/lu';
+import { estimateTraining, formatDuration } from '@/utils/trainingEstimate';
+import { LuTriangleAlert, LuCircleAlert, LuInfo, LuCircleCheck, LuLoader, LuCpu, LuMemoryStick, LuHardDrive, LuWandSparkles, LuZap, LuSparkles, LuShield, LuClock } from 'react-icons/lu';
 
 interface Props {
   open: boolean;
@@ -207,6 +208,219 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
 
   const proceedLabel = errorCount > 0 ? `${confirmVerb} anyway` : warnCount > 0 ? `${confirmVerb} anyway` : `Looks good — ${confirmVerb}`;
 
+  // The goal finding drives the top-level Speed/Quality/Fail-safe tabs; every
+  // other finding is a goal-agnostic check shown inside the active tab.
+  const goalFinding = findings.find(f => f.options && f.options.length > 0) || null;
+  const checkFindings = findings.filter(f => f !== goalFinding);
+
+  // A single finding card (used both in the flat fallback and inside a goal tab).
+  const renderFindingCard = (f: Finding) => {
+    const meta = levelMeta[f.level];
+    const canFix = !!onApplyFixes && !!f.fix && f.fix.length > 0;
+    const isSel = selected.has(f.id);
+    return (
+      <div key={f.id} className={`rounded-lg border p-3 ${meta.ring} ${canFix && isSel ? 'ring-1 ring-emerald-500/50' : ''}`}>
+        <div className="flex items-start gap-2">
+          {canFix ? (
+            <input
+              type="checkbox"
+              checked={isSel}
+              onChange={() => toggle(f.id)}
+              className="mt-1 accent-emerald-500 cursor-pointer"
+              title="Select this suggestion to apply"
+            />
+          ) : (
+            <span className={`mt-0.5 ${meta.text}`}>{meta.icon}</span>
+          )}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className={`text-xs uppercase tracking-wide ${meta.text}`}>{meta.label}</span>
+              <span className="text-gray-100 text-sm font-medium">{f.title}</span>
+              {canFix && <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">applyable</span>}
+            </div>
+            <p className="text-sm text-gray-300 mt-1 leading-relaxed">{f.detail}</p>
+            {(f.setting || f.current || f.recommended) && (
+              <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+                {f.setting && (
+                  <span className="text-gray-500">
+                    Setting: <span className="text-gray-300 font-mono">{f.setting}</span>
+                  </span>
+                )}
+                {f.current != null && (
+                  <span className="text-gray-500">
+                    Yours: <span className="text-amber-300 font-mono">{f.current}</span>
+                  </span>
+                )}
+                {f.recommended != null && (
+                  <span className="text-gray-500">
+                    Recommended: <span className="text-emerald-300 font-mono">{f.recommended}</span>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // The Speed/Quality/Fail-safe tab panel: predicted time, config diff, apply,
+  // feasibility, and the goal-agnostic checks for the active goal.
+  const renderGoalTabs = (goal: Finding, checks: Finding[]) => {
+    const opts = goal.options!;
+    const active = opts.find(o => o.id === optionChoice.get(goal.id)) ?? opts[0];
+    const apm = profileMeta[active.profile];
+
+    const proc: any = jobConfig?.config?.process?.[0] ?? {};
+    const model: any = proc.model ?? {};
+    const train: any = proc.train ?? {};
+    const datasets: any[] = proc.datasets ?? [];
+    // Effective setting = the profile's target if it changes it, else current.
+    const effVal = (path: string, cur: unknown) => {
+      const fx = active.fix.find(f => f.path === path);
+      return fx ? fx.value : cur;
+    };
+    const resolutionPx = Math.max(512, ...datasets.flatMap(d => d.resolution ?? [512]));
+    const steps = train.steps ?? 0;
+    const est = estimateTraining({
+      arch: model.arch ?? '',
+      resolutionPx,
+      batchSize: train.batch_size ?? 1,
+      gradientAccumulation: train.gradient_accumulation ?? 1,
+      quantize: !!effVal('config.process[0].model.quantize', model.quantize),
+      layerOffloading: !!effVal('config.process[0].model.layer_offloading', model.layer_offloading),
+      lowVram: !!effVal('config.process[0].model.low_vram', model.low_vram),
+      cacheTextEmbeddings: !!effVal('config.process[0].train.cache_text_embeddings', train.cache_text_embeddings),
+      steps,
+    });
+
+    const rows = active.fix.map(fx => {
+      const current = getAtPath(jobConfig, fx.path);
+      return { path: fx.path, current, target: fx.value, changed: current !== fx.value };
+    });
+    const changedCount = rows.filter(r => r.changed).length;
+
+    return (
+      <div>
+        {/* Goal tabs */}
+        <div className="flex gap-1 border-b border-gray-800">
+          {opts.map(o => {
+            const pm = profileMeta[o.profile];
+            const isActive = o.id === active.id;
+            return (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => selectTab(goal.id, o.id)}
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                  isActive ? pm.activeTab : 'border-transparent text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <span className={isActive ? pm.text : ''}>{pm.icon}</span>
+                {pm.label}
+                {o.recommended && <span className="text-[9px] uppercase tracking-wide text-emerald-400/80">rec</span>}
+                {o.note && <LuTriangleAlert className="w-3 h-3 text-amber-400/80" />}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="pt-3 space-y-3">
+          {/* Predicted training time */}
+          <div className={`rounded-lg border ${apm.ring} bg-gray-800/40 px-4 py-3 flex items-center justify-between gap-3`}>
+            <div className="flex items-center gap-2">
+              <LuClock className={apm.text} />
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-gray-500">Estimated training time</div>
+                <div className="text-gray-100 text-lg font-semibold">~{formatDuration(est.totalSeconds)}</div>
+              </div>
+            </div>
+            <div className="text-right text-xs text-gray-500 leading-relaxed">
+              ≈ {est.secPerStep.toFixed(1)} s/it × {steps.toLocaleString()} steps
+              <br />
+              <span className="text-gray-600">at {resolutionPx}px · rough estimate</span>
+            </div>
+          </div>
+
+          {/* Profile summary */}
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-wide border rounded px-1 py-0.5 ${apm.badge}`}>
+                {apm.icon}
+                {apm.label}
+              </span>
+              <span className="text-gray-100 text-sm font-medium">{active.label}</span>
+              {active.recommended && (
+                <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">Recommended</span>
+              )}
+            </div>
+            <p className="text-xs text-gray-400 mt-1 leading-relaxed">{active.detail}</p>
+          </div>
+
+          {/* Feasibility warning */}
+          {active.note && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+              <LuTriangleAlert className="mt-0.5 shrink-0" />
+              <span>{active.note}</span>
+            </div>
+          )}
+
+          {/* Config diff */}
+          <div className="rounded-md border border-gray-800 divide-y divide-gray-800">
+            {rows.map(r => (
+              <div key={r.path} className={`flex items-center justify-between gap-3 px-2.5 py-1.5 text-xs ${r.changed ? 'bg-amber-500/5' : ''}`}>
+                <span className="text-gray-300">{labelForPath(r.path)}</span>
+                <span className="flex items-center gap-1.5 font-mono shrink-0">
+                  {r.changed ? (
+                    <>
+                      <span className="text-amber-300">{fmtVal(r.current)}</span>
+                      <span className="text-gray-600">→</span>
+                      <span className={apm.text}>{fmtVal(r.target)}</span>
+                    </>
+                  ) : (
+                    <span className="text-gray-500">
+                      {fmtVal(r.current)} <span className="text-emerald-500/70">✓</span>
+                    </span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {onApplyFixes && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-gray-500">
+                {active.note
+                  ? 'This profile may not fit — adjust manually if you want it.'
+                  : changedCount === 0
+                    ? 'Your config already matches this goal.'
+                    : `${changedCount} setting${changedCount > 1 ? 's' : ''} would change.`}
+              </span>
+              <button
+                type="button"
+                onClick={() => applyProfile(active.fix)}
+                disabled={changedCount === 0 || !!active.note}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <LuWandSparkles /> Apply {apm.label}
+              </button>
+            </div>
+          )}
+
+          {/* Goal-agnostic checks, shown under the active goal */}
+          {checks.length > 0 && (
+            <div className="pt-1">
+              <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2 border-t border-gray-800 pt-3">
+                Checks &amp; suggestions
+              </div>
+              <div className="space-y-3">{checks.map(renderFindingCard)}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <Dialog open={open} onClose={onCancel} className="relative z-50">
       <div className="fixed inset-0 bg-black/60" aria-hidden="true" />
@@ -215,7 +429,9 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
           <div className="px-5 py-4 border-b border-gray-800 shrink-0">
             <DialogTitle className="text-gray-100 text-lg font-medium">Pre-flight check</DialogTitle>
             <p className="text-sm text-gray-400 mt-0.5">
-              We checked your settings against this machine and reviewed the training config. Review any advice below, then confirm.
+              {goalFinding
+                ? 'Pick a goal — Speed, Quality, or Fail-safe. Each tab shows the settings it changes, the checks for your config, and an estimated training time.'
+                : 'We checked your settings against this machine and reviewed the training config. Review any advice below, then confirm.'}
             </p>
           </div>
 
@@ -237,7 +453,7 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
               </div>
             ) : err ? (
               <div className="text-rose-400 text-sm">Could not run the check: {err}. You can still create the job.</div>
-            ) : problemCount === 0 ? (
+            ) : !goalFinding && problemCount === 0 ? (
               <div className="flex flex-col items-center justify-center text-center py-8 gap-2">
                 <LuCircleCheck className="w-8 h-8 text-emerald-400" />
                 <div className="text-gray-100 font-medium">No problems found</div>
@@ -247,140 +463,8 @@ export default function PreflightModal({ open, jobConfig, onConfirm, onCancel, o
             ) : null}
 
             {!loading &&
-              findings.map(f => {
-                const meta = levelMeta[f.level];
-                const canFix = !!onApplyFixes && !!f.fix && f.fix.length > 0;
-                const isSel = selected.has(f.id);
-                return (
-                  <div key={f.id} className={`rounded-lg border p-3 ${meta.ring} ${canFix && isSel ? 'ring-1 ring-emerald-500/50' : ''}`}>
-                    <div className="flex items-start gap-2">
-                      {canFix ? (
-                        <input
-                          type="checkbox"
-                          checked={isSel}
-                          onChange={() => toggle(f.id)}
-                          className="mt-1 accent-emerald-500 cursor-pointer"
-                          title="Select this suggestion to apply"
-                        />
-                      ) : (
-                        <span className={`mt-0.5 ${meta.text}`}>{meta.icon}</span>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs uppercase tracking-wide ${meta.text}`}>{meta.label}</span>
-                          <span className="text-gray-100 text-sm font-medium">{f.title}</span>
-                          {canFix && <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">applyable</span>}
-                        </div>
-                        <p className="text-sm text-gray-300 mt-1 leading-relaxed">{f.detail}</p>
-                        {(f.setting || f.current || f.recommended) && (
-                          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
-                            {f.setting && (
-                              <span className="text-gray-500">
-                                Setting: <span className="text-gray-300 font-mono">{f.setting}</span>
-                              </span>
-                            )}
-                            {f.current != null && (
-                              <span className="text-gray-500">
-                                Yours: <span className="text-amber-300 font-mono">{f.current}</span>
-                              </span>
-                            )}
-                            {f.recommended != null && (
-                              <span className="text-gray-500">
-                                Recommended: <span className="text-emerald-300 font-mono">{f.recommended}</span>
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        {f.options && f.options.length > 0 && (() => {
-                          const active = f.options.find(o => o.id === optionChoice.get(f.id)) ?? f.options[0];
-                          const apm = profileMeta[active.profile];
-                          // Per-setting diff for the active tab: current -> target, mismatches highlighted.
-                          const rows = active.fix.map(fx => {
-                            const current = getAtPath(jobConfig, fx.path);
-                            return { path: fx.path, current, target: fx.value, changed: current !== fx.value };
-                          });
-                          const changedCount = rows.filter(r => r.changed).length;
-                          return (
-                            <div className="mt-3">
-                              {/* Goal tabs */}
-                              <div className="flex gap-1 border-b border-gray-800">
-                                {f.options!.map(o => {
-                                  const pm = profileMeta[o.profile];
-                                  const isActive = o.id === active.id;
-                                  return (
-                                    <button
-                                      key={o.id}
-                                      type="button"
-                                      onClick={() => selectTab(f.id, o.id)}
-                                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
-                                        isActive ? apm.activeTab : 'border-transparent text-gray-400 hover:text-gray-200'
-                                      }`}
-                                    >
-                                      <span className={isActive ? pm.text : ''}>{pm.icon}</span>
-                                      {pm.label}
-                                      {o.recommended && <span className="text-[9px] uppercase tracking-wide text-emerald-400/80">rec</span>}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                              {/* Active goal panel */}
-                              <div className="pt-3">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-wide border rounded px-1 py-0.5 ${apm.badge}`}>
-                                    {apm.icon}
-                                    {apm.label}
-                                  </span>
-                                  <span className="text-gray-100 text-sm font-medium">{active.label}</span>
-                                  {active.recommended && (
-                                    <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 border border-emerald-500/30 rounded px-1">
-                                      Recommended
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-xs text-gray-400 mt-1 leading-relaxed">{active.detail}</p>
-                                {/* Diff table */}
-                                <div className="mt-2 rounded-md border border-gray-800 divide-y divide-gray-800">
-                                  {rows.map(r => (
-                                    <div key={r.path} className={`flex items-center justify-between gap-3 px-2.5 py-1.5 text-xs ${r.changed ? 'bg-amber-500/5' : ''}`}>
-                                      <span className="text-gray-300">{labelForPath(r.path)}</span>
-                                      <span className="flex items-center gap-1.5 font-mono shrink-0">
-                                        {r.changed ? (
-                                          <>
-                                            <span className="text-amber-300">{fmtVal(r.current)}</span>
-                                            <span className="text-gray-600">→</span>
-                                            <span className={apm.text}>{fmtVal(r.target)}</span>
-                                          </>
-                                        ) : (
-                                          <span className="text-gray-500">{fmtVal(r.current)} <span className="text-emerald-500/70">✓</span></span>
-                                        )}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                                {onApplyFixes && (
-                                  <div className="mt-2 flex items-center justify-between gap-2">
-                                    <span className="text-[11px] text-gray-500">
-                                      {changedCount === 0 ? 'Your config already matches this goal.' : `${changedCount} setting${changedCount > 1 ? 's' : ''} would change.`}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() => applyProfile(active.fix)}
-                                      disabled={changedCount === 0}
-                                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      <LuWandSparkles /> Apply {apm.label}
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              !err &&
+              (goalFinding ? renderGoalTabs(goalFinding, checkFindings) : checkFindings.map(renderFindingCard))}
           </div>
 
           {/* Apply-suggestions bar (single-fix findings; strategy tabs apply via their own button) */}
