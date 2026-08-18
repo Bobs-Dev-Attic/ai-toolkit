@@ -10,6 +10,9 @@ interface Props {
   initialThumbs: string[];
   statsLoading: boolean;
   pageSize?: number;
+  // Dataset folder mtime from stats. When it changes (files added/removed/
+  // renamed on disk), the cached thumb paths are stale and must be dropped.
+  modifiedAt?: number;
 }
 
 const THUMB_PX = 56;
@@ -22,6 +25,9 @@ interface CacheEntry {
   paths: string[];
   loaded: boolean;
   error?: string;
+  // The dataset's modified_at this cache was built from; used to detect that the
+  // folder changed on disk (rename/add/delete) so the stale paths are dropped.
+  version?: number;
 }
 
 const cache: Record<string, CacheEntry> = {};
@@ -31,6 +37,7 @@ export default function DatasetThumbnailPager({
   initialThumbs,
   statsLoading,
   pageSize,
+  modifiedAt,
 }: Props) {
   const [page, setPage] = useState(0);
   const [, setTick] = useState(0);
@@ -58,9 +65,23 @@ export default function DatasetThumbnailPager({
     loading: false,
     paths: initialThumbs,
     loaded: false,
+    version: modifiedAt,
   };
   // Keep the cache hydrated from props for the very first render.
   if (!cache[datasetName]) cache[datasetName] = entry;
+
+  // If the dataset changed on disk since this entry was cached (rename/add/
+  // delete bumps the folder mtime), the cached paths point at files that no
+  // longer exist. Drop them and re-seed from the fresh stats thumbs so a later
+  // "next" re-fetches the full list.
+  if (modifiedAt !== undefined && entry.version !== undefined && entry.version !== modifiedAt) {
+    entry.paths = initialThumbs;
+    entry.loaded = false;
+    entry.loading = false;
+    entry.error = undefined;
+    entry.version = modifiedAt;
+  }
+  if (entry.version === undefined) entry.version = modifiedAt;
 
   // Keep cache.paths in sync with initialThumbs until a full fetch happens.
   if (!entry.loaded && entry.paths.length < initialThumbs.length) {

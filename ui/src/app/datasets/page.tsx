@@ -165,6 +165,7 @@ export default function Datasets() {
       image_count: stats[dataset]?.image_count,
       total_size: stats[dataset]?.total_size,
       thumbs: stats[dataset]?.thumbs || [],
+      modified_at: stats[dataset]?.modified_at,
     }));
     const dir = sortDir === 'asc' ? 1 : -1;
     rows.sort((a, b) => {
@@ -254,6 +255,7 @@ export default function Datasets() {
         datasetName={row.name}
         initialThumbs={row.thumbs || []}
         statsLoading={statsLoading}
+        modifiedAt={row.modified_at}
       />
     ),
   };
