@@ -505,11 +505,28 @@ class MinimaxH3Model(BaseModel):
         flush()
 
         tokenizer, processor, text_encoder = self._load_text_encoder()
-        if any(isinstance(m, OstrisLinear) for m in text_encoder.modules()):
-            # already nvfp4/int8 quantized; aitk_post_load skips quantize_te
+        te_kwargs = self.component_load_kwargs("te")
+        # The TE ships pre-quantized (nvfp4 LM linears + int8 embeddings).
+        # aitk_post_load only preserves shipped quantization when the requested
+        # qtype matches it; with quantize_te off the request is None, which it
+        # treats as "full finetune" and dequantizes the 32B weights to full
+        # precision -> OOM. Mark it quantized and, when no qtype was requested,
+        # request the shipped one so it is kept exactly as-is. (mirrors the
+        # `shipped` computation in toolkit/models/v2/_mixin.aitk_post_load)
+        shipped_te_qtypes = sorted(
+            {
+                getattr(m.ostris_quantizer, "qtype", None)
+                for m in text_encoder.modules()
+                if isinstance(m, OstrisLinear)
+            }
+            - {None}
+        )
+        if shipped_te_qtypes:
             text_encoder.aitk_is_quantized = True
+            if not te_kwargs.get("qtype"):
+                te_kwargs["qtype"] = shipped_te_qtypes[0]
         # quantize + offload + placement, all driven by model_config
-        text_encoder.aitk_post_load(**self.component_load_kwargs("te"))
+        text_encoder.aitk_post_load(**te_kwargs)
         flush()
 
         vae_bundle = self._load_vaes()
