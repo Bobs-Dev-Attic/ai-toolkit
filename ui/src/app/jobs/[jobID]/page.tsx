@@ -119,6 +119,9 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
   if (jobType === 'caption') {
     title = `Captioning: ${job?.job_ref || 'Loading...'}`;
   }
+  if (jobType === 'inference') {
+    title = `Inference Engine: ${job?.name || 'Loading...'}`;
+  }
 
   return (
     <SampleSortContext.Provider value={{ sortOrder: sampleSortOrder, setSortOrder: setSampleSortOrder }}>

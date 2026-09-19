@@ -486,7 +486,7 @@ export default function PresetsPage() {
                             No models assigned — won't appear on any job.
                           </span>
                         ) : (
-                          p.modelArchs.map(arch => {
+                          p.modelArchs.map((arch: string) => {
                             const meta = archOptions.find(o => o.value === arch);
                             return (
                               <span
