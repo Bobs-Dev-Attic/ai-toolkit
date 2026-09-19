@@ -16,7 +16,7 @@ import YAML from 'yaml';
 import path from 'path';
 import { TopBar, MainContent } from '@/components/layout';
 import { Button, Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
-import { ChevronDown, Save } from 'lucide-react';
+import { ChevronDown, Save, Play } from 'lucide-react';
 import SaveAsPresetModal from './SaveAsPresetModal';
 import PreflightModal from '@/components/PreflightModal';
 import { FaChevronLeft } from 'react-icons/fa';
@@ -24,6 +24,8 @@ import SimpleJob from './SimpleJob';
 import AdvancedConfigEditor from '@/components/AdvancedConfigEditor';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { apiClient } from '@/utils/api';
+import { startJob } from '@/utils/jobs';
+import { startQueue } from '@/utils/queue';
 import SplitWorkspace, { ChangeEntry } from './SplitWorkspace';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -75,6 +77,12 @@ export default function TrainingForm() {
 
   const [jobConfig, setJobConfig] = useNestedState<JobConfig>(objectCopy(migrateJobConfig(defaultJobConfig)));
   const [status, setStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  // Editing an existing job (runId) shows the "Add to Queue" controls; a brand-new
+  // job or a clone (no runId) is auto-saved as a draft on Create.
+  const isEditing = !!runId;
+  // When queuing from the Edit page, optionally kick off the GPU queue even if it's
+  // currently stopped.
+  const [autoStartQueue, setAutoStartQueue] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImportConfig = () => {
@@ -214,63 +222,111 @@ export default function TrainingForm() {
     }
   }, [settings, isSettingsLoaded]);
 
-  const saveJob = async (asDraft = false) => {
-    if (status === 'saving') return;
-    setStatus('saving');
-
-    apiClient
-      .post('/api/jobs', {
+  // Persist the current config. Returns the job id on success (the existing runId
+  // when editing, or the freshly-created id for a new job/clone), or null on failure.
+  const persistJob = async (asDraft: boolean): Promise<string | null> => {
+    try {
+      const res = await apiClient.post('/api/jobs', {
         id: runId,
         name: jobConfig.config.name,
         gpu_ids: gpuIDs,
         job_config: jobConfig,
         ...(asDraft ? { status: 'draft' } : {}),
-      })
-      .then(res => {
-        setStatus('success');
-        if (asDraft) {
-          router.push('/jobs/drafts');
-          return;
-        }
-        if (runId) {
-          router.push(`/jobs/${runId}`);
-        } else {
-          router.push(`/jobs/${res.data.id}`);
-        }
-      })
-      .catch(error => {
-        if (error.response?.status === 409) {
-          alert('Training name already exists. Please choose a different name.');
-        } else {
-          alert('Failed to save job. Please try again.');
-        }
-        console.log('Error saving training:', error);
-      })
-      .finally(() =>
-        setTimeout(() => {
-          setStatus('idle');
-        }, 2000),
-      );
+      });
+      return runId ?? res.data.id;
+    } catch (error: any) {
+      if (error.response?.status === 409) {
+        alert('Training name already exists. Please choose a different name.');
+      } else {
+        alert('Failed to save job. Please try again.');
+      }
+      console.log('Error saving training:', error);
+      return null;
+    }
+  };
+
+  const saveJob = async (asDraft = false) => {
+    if (status === 'saving') return;
+    setStatus('saving');
+
+    const savedId = await persistJob(asDraft);
+    if (!savedId) {
+      setTimeout(() => setStatus('idle'), 2000);
+      return;
+    }
+    setStatus('success');
+    setTimeout(() => setStatus('idle'), 2000);
+
+    if (!runId) {
+      // Brand-new job or clone: it was auto-saved as a draft. Land on its Edit
+      // page so the user can review and Add to Queue.
+      router.push(`/jobs/new?id=${savedId}`);
+      return;
+    }
+    if (asDraft) {
+      router.push('/jobs/drafts');
+      return;
+    }
+    router.push(`/jobs/${runId}`);
+  };
+
+  // Save current edits, then push the job into its GPU queue. When
+  // autoStartQueue is on, also start the queue (even if it was stopped).
+  const addToQueue = async () => {
+    if (status === 'saving' || !runId) return;
+    setStatus('saving');
+    try {
+      const savedId = await persistJob(false);
+      if (!savedId) return;
+      await startJob(savedId);
+      if (autoStartQueue && gpuIDs) {
+        await startQueue(gpuIDs);
+      }
+      setStatus('success');
+      router.push('/jobs');
+    } catch (error) {
+      console.error('Error adding job to queue:', error);
+      alert('Failed to add the job to the queue. Please try again.');
+      setStatus('idle');
+    } finally {
+      setTimeout(() => setStatus('idle'), 2000);
+    }
   };
 
   const [preflightOpen, setPreflightOpen] = useState(false);
+  // The pre-flight modal serves two flows: creating a draft (false) and queuing
+  // an existing job (true). This tracks which action to run on confirm.
+  const [preflightQueues, setPreflightQueues] = useState(false);
 
   // Whether this config is a trainable job worth pre-flighting (has model + train).
   const isTrainingJob = !!jobConfig?.config?.process?.[0]?.train && !!jobConfig?.config?.process?.[0]?.model;
 
-  // Create flow: for training jobs, show the pre-flight check first; otherwise save directly.
+  // Create flow (new job / clone): auto-save as a draft. No pre-flight here — the
+  // pre-flight check runs when the draft is later added to the queue.
   const requestCreate = () => {
     if (status === 'saving') return;
+    saveJob(true);
+  };
+
+  // Queue flow (Edit page): pre-flight training jobs before queuing.
+  const requestAddToQueue = () => {
+    if (status === 'saving') return;
     if (isTrainingJob) {
+      setPreflightQueues(true);
       setPreflightOpen(true);
     } else {
-      saveJob(false);
+      addToQueue();
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    requestCreate();
+    // Enter/submit in the form: update when editing, otherwise create the draft.
+    if (isEditing) {
+      saveJob(false);
+    } else {
+      requestCreate();
+    }
   };
 
   return (
@@ -408,18 +464,46 @@ export default function TrainingForm() {
             </MenuItems>
           </Menu>
         </div>
+        {isEditing && (
+          <label
+            className="hidden sm:flex items-center gap-1.5 pr-2 text-xs text-gray-300 cursor-pointer select-none"
+            title="Start this GPU's queue when adding to it, even if the queue is currently stopped."
+          >
+            <input
+              type="checkbox"
+              checked={autoStartQueue}
+              onChange={e => setAutoStartQueue(e.target.checked)}
+              className="cursor-pointer accent-green-500"
+            />
+            Auto-Start Queue
+          </label>
+        )}
+        {isEditing && (
+          <div className="flex-shrink-0 pr-1 sm:pr-2">
+            <Button
+              className="flex items-center gap-1 text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-2 sm:px-3 py-1 rounded-md text-xs sm:text-base"
+              onClick={requestAddToQueue}
+              disabled={status === 'saving'}
+              title="Save changes and queue this job for training"
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span className="sm:hidden">Queue</span>
+              <span className="hidden sm:inline">Add to Queue</span>
+            </Button>
+          </div>
+        )}
         <div className="flex-shrink-0">
           <Button
             className="text-white bg-green-600 hover:bg-green-700 px-2 sm:px-3 py-1 rounded-md text-xs sm:text-base"
-            onClick={requestCreate}
+            onClick={isEditing ? () => saveJob(false) : requestCreate}
             disabled={status === 'saving'}
           >
             {status === 'saving' ? (
               'Saving...'
             ) : (
               <>
-                <span className="sm:hidden">{runId ? 'Update' : 'Create'}</span>
-                <span className="hidden sm:inline">{runId ? 'Update Job' : 'Create Job'}</span>
+                <span className="sm:hidden">{isEditing ? 'Update' : 'Draft'}</span>
+                <span className="hidden sm:inline">{isEditing ? 'Update Job' : 'Save as Draft'}</span>
               </>
             )}
           </Button>
@@ -551,11 +635,20 @@ export default function TrainingForm() {
       <PreflightModal
         open={preflightOpen}
         jobConfig={jobConfig}
+        confirmVerb={preflightQueues ? 'Add to Queue' : undefined}
         onConfirm={() => {
           setPreflightOpen(false);
-          saveJob(false);
+          if (preflightQueues) {
+            setPreflightQueues(false);
+            addToQueue();
+          } else {
+            saveJob(false);
+          }
         }}
-        onCancel={() => setPreflightOpen(false)}
+        onCancel={() => {
+          setPreflightOpen(false);
+          setPreflightQueues(false);
+        }}
         onApplyFixes={fixes => {
           // Apply each suggestion's path/value into the job config in one update.
           setJobConfig((prev: JobConfig) => {
