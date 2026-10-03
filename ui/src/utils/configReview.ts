@@ -1,5 +1,5 @@
 import { JobConfig } from '@/types';
-import { Finding, FindingOption, PreflightHardware, archSize } from './preflight';
+import { Finding, FindingOption, PreflightHardware, archSize, isQwenImage21 } from './preflight';
 
 // ---------------------------------------------------------------------------
 // Stage A: rules-based training-config review.
@@ -36,6 +36,9 @@ function bucketDivisibility(arch: string): number {
 // transformers generally want gentler LoRA LRs than small ones.
 function transformerIsLarge(arch: string): boolean {
   const a = (arch || '').toLowerCase();
+  // ~7B single-stream DiT: not in the 12-20B class this LR nudge is written for,
+  // and the Qwen-Image 2.1 guide gives no LR advice, so don't invent one.
+  if (isQwenImage21(a)) return false;
   return (
     a.includes('krea2') ||
     a.includes('minimax') ||
@@ -539,6 +542,175 @@ export function reviewTrainingConfig(
     }
   }
 
+  // ---- Qwen-Image 2.1 model-specific recipe (RunComfy guide) ----------
+  // One checkpoint covers text-to-image, reference editing and native RGBA. The
+  // costly mistakes: leaving the shipped convrot8 quantization (another qtype
+  // re-quantizes layer by layer), mixing RGBA with alpha_mask (the dataloader
+  // silently drops the alpha, so transparency is never learned), mismatched
+  // reference counts inside a batch, and sampling an edit LoRA with no reference
+  // (that previews text-to-image, not the edit it was trained for).
+  if (isQwenImage21(arch)) {
+    const samplingOn = !train?.disable_sampling;
+    const modelKwargs: any = (model as any)?.model_kwargs ?? {};
+    const rgba = !!modelKwargs.rgba;
+    const ds = datasets as any[];
+
+    // Matched quantization: both switches on, both formats convrot8.
+    const quantMatched =
+      !!model?.quantize && !!model?.quantize_te && model?.qtype === 'convrot8' && model?.qtype_te === 'convrot8';
+    if (!quantMatched) {
+      findings.push({
+        id: 'qwen21-matched-quant',
+        level: 'warning',
+        title: 'Keep Qwen-Image 2.1 on its shipped convrot8 quantization',
+        detail:
+          `quantize=${!!model?.quantize} (${model?.qtype ?? 'unset'}), quantize_te=${!!model?.quantize_te} (${model?.qtype_te ?? 'unset'}). ` +
+          `The Comfy-Org Qwen-Image 2.1 checkpoint ships int8-convrot for both the transformer and the text encoder, and the tested defaults keep both switches on at convrot8 so those weights load unchanged. ` +
+          `Another format re-quantizes layer by layer (slower to load, different numerics from the shipped weights), and turning quantization off departs from the tested recipe. Establish a working baseline on the matched settings first.`,
+        setting: 'model.quantize / quantize_te / qtype / qtype_te',
+        current: `quantize=${!!model?.quantize}/${model?.qtype ?? '-'}, quantize_te=${!!model?.quantize_te}/${model?.qtype_te ?? '-'}`,
+        recommended: 'both on, convrot8',
+        fix: [
+          { path: 'config.process[0].model.quantize', value: true },
+          { path: 'config.process[0].model.quantize_te', value: true },
+          { path: 'config.process[0].model.qtype', value: 'convrot8' },
+          { path: 'config.process[0].model.qtype_te', value: 'convrot8' },
+        ],
+      });
+    }
+
+    // Flow-matching scheduler, sampler and the `shift` timestep type.
+    const schedFix: { path: string; value: unknown }[] = [];
+    const schedBits: string[] = [];
+    const lc = (v: unknown) => String(v ?? '').toLowerCase();
+    if (lc(train?.noise_scheduler) !== 'flowmatch') {
+      schedFix.push({ path: 'config.process[0].train.noise_scheduler', value: 'flowmatch' });
+      schedBits.push(`noise_scheduler=${train?.noise_scheduler ?? 'unset'}`);
+    }
+    if (lc(process.sample?.sampler) !== 'flowmatch') {
+      schedFix.push({ path: 'config.process[0].sample.sampler', value: 'flowmatch' });
+      schedBits.push(`sampler=${process.sample?.sampler ?? 'unset'}`);
+    }
+    if (lc(train?.timestep_type) !== 'shift') {
+      schedFix.push({ path: 'config.process[0].train.timestep_type', value: 'shift' });
+      schedBits.push(`timestep_type=${train?.timestep_type ?? 'unset'}`);
+    }
+    if (schedFix.length > 0) {
+      findings.push({
+        id: 'qwen21-flowmatch-shift',
+        level: 'warning',
+        title: 'Qwen-Image 2.1 trains with FlowMatch and Shift timesteps',
+        detail:
+          `${schedBits.join(', ')}. Qwen-Image 2.1 is a flow-matching model: the recipe uses the FlowMatch scheduler and sampler with the Shift timestep type. ` +
+          `Weighted/Sigmoid defaults carried over from other models bias learning toward the wrong noise regions, which shows up as weak concept pickup.`,
+        setting: 'train.noise_scheduler / sample.sampler / train.timestep_type',
+        current: schedBits.join(', '),
+        recommended: 'flowmatch / flowmatch / shift',
+        fix: schedFix,
+      });
+    }
+
+    // Preview guidance: start at 3.0 and compare lower before blaming the LoRA.
+    const gs = process.sample?.guidance_scale;
+    if (samplingOn && typeof gs === 'number' && gs > 4.5) {
+      findings.push({
+        id: 'qwen21-guidance',
+        level: 'info',
+        title: 'Start Qwen-Image 2.1 previews near guidance 3',
+        detail:
+          `Preview guidance_scale is ${gs}. The training UI default for Qwen-Image 2.1 is 3.0; at ${gs} previews tend to look harsh or over-sharpened, which is easy to mistake for an over-trained LoRA. ` +
+          `Keep guidance, prompts and references fixed while comparing checkpoints, and try a modestly lower value before adding steps.`,
+        setting: 'sample.guidance_scale',
+        current: String(gs),
+        recommended: '3.0',
+        fix: [{ path: 'config.process[0].sample.guidance_scale', value: 3 }],
+      });
+    }
+
+    // RGBA vs alpha_mask: both read the alpha channel, with different meanings.
+    // The dataloader gives alpha_mask precedence, so the transparency is dropped.
+    const alphaMaskIdx = ds.map((d, i) => (d?.alpha_mask ? i : -1)).filter(i => i >= 0);
+    if (rgba && alphaMaskIdx.length > 0) {
+      findings.push({
+        id: 'qwen21-rgba-alpha-mask',
+        level: 'warning',
+        title: 'RGBA and alpha_mask cannot be combined',
+        detail:
+          `Transparency (RGBA) is on, but ${alphaMaskIdx.length} dataset(s) also set alpha_mask. RGBA treats alpha as image content the model learns to generate; alpha_mask uses it to weight the loss instead. ` +
+          `With both set, alpha_mask wins and the alpha is not learned as content, so the LoRA will not produce transparency. Turn alpha_mask off for those datasets (masked training is not a way to learn transparent output), or turn RGBA off.`,
+        setting: 'model.model_kwargs.rgba / datasets[].alpha_mask',
+        current: `rgba=true, alpha_mask on dataset(s) ${alphaMaskIdx.map(i => i + 1).join(', ')}`,
+        recommended: 'one or the other',
+      });
+    }
+
+    // RGBA reminders: only when it is on.
+    if (rgba) {
+      findings.push({
+        id: 'qwen21-rgba-prompt',
+        level: 'info',
+        title: 'Transparency (RGBA) is on — state it in captions and previews',
+        detail:
+          `Alpha is kept for dataset images and references, encoded through all four VAE channels, and samples are saved as PNG. The checkbox preserves alpha; it does not remove backgrounds, so targets must carry real transparency (not a baked-in checkerboard). ` +
+          `Use the official format in captions and sample prompts, for example: "This is an RGBA image with transparency. <subject>. The image has alpha channel and the background is transparent." ` +
+          `Do not label opaque targets as transparent. Toggling RGBA re-caches latents, so decide before the run.`,
+        setting: 'model.model_kwargs.rgba',
+        current: 'on',
+        recommended: 'real alpha targets + RGBA wording in captions',
+      });
+    }
+
+    // Editing: reference streams must line up between datasets and previews.
+    const refCount = (d: any) =>
+      [d?.control_path_1, d?.control_path_2, d?.control_path_3].filter(p => p && String(p).trim() !== '').length;
+    const counts = ds.map(refCount);
+    const trainsEdit = counts.some(c => c > 0);
+    if (new Set(counts).size > 1) {
+      findings.push({
+        id: 'qwen21-reference-counts',
+        level: 'warning',
+        title: 'Datasets use different numbers of reference images',
+        detail:
+          `Reference streams per dataset: ${counts.map((c, i) => `#${i + 1}=${c}`).join(', ')}. Training needs matching reference-token counts within a batch, so keep the number of references consistent across examples rather than mixing text-to-image data with paired edit data, or datasets with incomplete pairs. ` +
+          `Each reference stream should carry a distinct input, not duplicated placeholders.`,
+        setting: 'datasets[].control_path_1..3',
+        current: counts.map(String).join(' / '),
+        recommended: 'same count in every dataset',
+      });
+    }
+    if (samplingOn) {
+      const sampleItems = ((process.sample as any)?.samples ?? []) as any[];
+      const hasRef = (s: any) =>
+        [s?.ctrl_img, s?.ctrl_img_1, s?.ctrl_img_2, s?.ctrl_img_3].some(p => p && String(p).trim() !== '');
+      const withoutRef = sampleItems.filter(s => !hasRef(s)).length;
+      if (trainsEdit && sampleItems.length > 0 && withoutRef > 0) {
+        findings.push({
+          id: 'qwen21-edit-samples-need-reference',
+          level: 'warning',
+          title: 'Edit LoRA previews need held-out reference images',
+          detail:
+            `Datasets train with reference images, but ${withoutRef} of ${sampleItems.length} sample prompt(s) have none. An edit LoRA sampled without a reference is tested as plain text-to-image, not the edit it learned. ` +
+            `Give each sample a held-out reference (one not in the training set) with the same roles and order as training. Sample references are configured separately from dataset references.`,
+          setting: 'sample.samples[].ctrl_img_1..3',
+          current: `${withoutRef} sample(s) without a reference`,
+          recommended: 'held-out reference on every sample',
+        });
+      } else if (!trainsEdit && sampleItems.some(hasRef)) {
+        findings.push({
+          id: 'qwen21-samples-extra-reference',
+          level: 'info',
+          title: 'Previews use references the datasets do not',
+          detail:
+            `Some sample prompts include reference images, but no dataset has control paths, so this run trains text-to-image. Adding references only to previews does not change the training task. ` +
+            `Leave sample references empty for text-to-image, or add paired controls to the datasets to train editing.`,
+          setting: 'sample.samples[].ctrl_img_1..3 / datasets[].control_path_1..3',
+          current: 'refs in samples, none in datasets',
+          recommended: 'make them match',
+        });
+      }
+    }
+  }
+
   // ---- Krea2: conv layers aren't part of the recipe -------------------
   // Krea 2's SingleStreamDiT LoRA recipe trains linear layers only; the UI
   // disables the conv section for every krea2 variant. A raw config with a
@@ -583,7 +755,78 @@ export function reviewTrainingConfig(
     // Instead, collapse the decision into ONE finding that offers mutually
     // exclusive, intent-labelled options; the user picks the profile that
     // matches their goal and gets a self-consistent set of settings.
-    if (large && vramGB > 0 && ramGB > 0) {
+    // Qwen-Image 2.1: the weights are pre-quantized, so the goal is not "which
+    // quantization" (it stays matched at convrot8 in every profile) but how the
+    // memory-saving switches and the text-embedding cache are set. archSize is the
+    // resident footprint, so weights = transformer + text encoder with no scaling.
+    if (isQwenImage21(arch) && vramGB > 0 && ramGB > 0) {
+      const weights = bf16Weights;
+      const fitsResident = weights + 4 < vramGB * 0.92; // weights + ~4GB activations
+      const matched = [
+        { path: 'config.process[0].model.quantize', value: true },
+        { path: 'config.process[0].model.quantize_te', value: true },
+        { path: 'config.process[0].model.qtype', value: 'convrot8' },
+        { path: 'config.process[0].model.qtype_te', value: 'convrot8' },
+      ];
+      const resident = [
+        { path: 'config.process[0].model.low_vram', value: false },
+        { path: 'config.process[0].model.layer_offloading', value: false },
+      ];
+      const noFit = `The resident weights (~${weights.toFixed(0)} GB) plus activations may exceed your ${vramGB.toFixed(0)} GB VRAM — risk of OOM. Prefer Fail-safe.`;
+
+      const options: FindingOption[] = [
+        {
+          id: 'qwen21-speed',
+          profile: 'speed',
+          label: 'Fastest throughput',
+          detail:
+            `Matched convrot8 weights resident on the GPU (Low VRAM and layer offloading off), text embeddings cached so the ~${size.teGB.toFixed(0)} GB text encoder is unloaded after caching. ` +
+            `Nothing streams over PCIe, so this is the highest throughput. The guide suggests keeping Low VRAM on for a first run — switch to this once a first sample has rendered cleanly.`,
+          recommended: fitsResident,
+          note: fitsResident ? undefined : noFit,
+          fix: [...matched, ...resident, { path: 'config.process[0].train.cache_text_embeddings', value: true }],
+        },
+        {
+          id: 'qwen21-quality',
+          profile: 'quality',
+          label: 'Best training signal',
+          detail:
+            `Same matched convrot8 weights (they are the checkpoint's native format, so there is no higher-fidelity load to switch to), resident on the GPU, with text-embedding caching OFF. ` +
+            `Captions are re-encoded each step, so caption dropout and token shuffle actually apply (cached embeddings skip them) — better prompt adherence at guidance, at the cost of keeping the text encoder resident and slower steps.`,
+          recommended: false,
+          note: fitsResident ? undefined : noFit,
+          fix: [...matched, ...resident, { path: 'config.process[0].train.cache_text_embeddings', value: false }],
+        },
+        {
+          id: 'qwen21-safe',
+          profile: 'safe',
+          label: 'Lowest VRAM',
+          detail:
+            `Matched convrot8 weights with Low VRAM (which also tiles the VAE decode for samples) and layer offloading both on, text embeddings cached. ` +
+            `The most resistant to out-of-memory on ${vramGB.toFixed(0)} GB and the guide's recommended setup for an initial run — the slowest steps, and the fallback if either faster profile OOMs. Offloading is a capacity tool, not a speed-up.`,
+          recommended: !fitsResident,
+          fix: [
+            ...matched,
+            { path: 'config.process[0].model.low_vram', value: true },
+            { path: 'config.process[0].model.layer_offloading', value: true },
+            { path: 'config.process[0].train.cache_text_embeddings', value: true },
+          ],
+        },
+      ];
+
+      findings.push({
+        id: 'hw-memory-strategy',
+        level: 'info',
+        title: 'Configuration goal: Speed, Quality, or Fail-safe',
+        detail:
+          `Qwen-Image 2.1 ships pre-quantized (~${weights.toFixed(0)} GB resident), so quantization stays matched at convrot8 in every profile; the goal changes Low VRAM, layer offloading and text-embedding caching on your ${vramGB.toFixed(0)} GB VRAM / ${ramGB.toFixed(0)} GB RAM. ` +
+          `Pick the goal that matches this run; each tab shows exactly which of your current settings it would change.`,
+        setting: 'model.low_vram / model.layer_offloading / train.cache_text_embeddings',
+        options,
+      });
+    }
+
+    if (large && vramGB > 0 && ramGB > 0 && !isQwenImage21(arch)) {
       const halfTransformer = size.transformerGB * 0.5; // ~qfloat8 resident footprint
       const vramBudget = vramGB * 0.92;
       const ramBudget = ramGB * 0.85;

@@ -72,9 +72,21 @@ export interface ArchSize {
   label: string;
 }
 
+// Qwen-Image 2.1 (arch `qwen_image_2`, optionally `qwen_image_2:<variant>`). Matched
+// exactly so it never falls into the older 20B `qwen_image` family below, nor
+// matches `qwen_image:2512`.
+export function isQwenImage21(arch: string | undefined): boolean {
+  const a = (arch || '').toLowerCase();
+  return a === 'qwen_image_2' || a.startsWith('qwen_image_2:');
+}
+
 export function archSize(arch: string): ArchSize {
   const a = (arch || '').toLowerCase();
   // order matters: match most specific first
+  // Qwen-Image 2.1 ships as the Comfy-Org int8-convrot repack: ~7B single-stream DiT
+  // (~7.5GB resident) + Qwen3-VL-8B text encoder (~8.5GB resident). Approximate
+  // resident footprints — the weights never load at bf16 (see isPrequantized).
+  if (isQwenImage21(a)) return { transformerGB: 7.5, teGB: 8.5, label: 'Qwen-Image 2.1' };
   // 12.9B transformer (~26GB bf16) + Qwen3-VL-4B text encoder (~8GB)
   if (a.includes('krea2')) return { transformerGB: 26, teGB: 8, label: 'Krea 2' };
   // MiniMax H3 ships pre-quantized: pruned int8-ConvRot DiT (~13GB) + nvfp4 AWQ
@@ -112,8 +124,13 @@ function quantFactor(qtype: string | undefined, quantize: boolean | undefined): 
 // DiT + nvfp4 Qwen3-VL text encoder). For these, `quantize` should stay OFF and
 // archSize already reflects the quantized resident footprint — so we must never
 // tell the user to turn quantization on to "save memory".
+//
+// Qwen-Image 2.1 is the nuance: its Comfy-Org checkpoints are int8-convrot too, but
+// the recipe keeps quantize ON with a *matching* qtype (convrot8) — that matched
+// setting is what loads the shipped weights unchanged. Either way archSize is the
+// resident footprint, so quantization must not shrink it a second time.
 export function isPrequantized(arch: string | undefined): boolean {
-  return (arch || '').toLowerCase().includes('minimax_h3');
+  return (arch || '').toLowerCase().includes('minimax_h3') || isQwenImage21(arch);
 }
 
 function fmtGB(gb: number): string {
@@ -137,8 +154,11 @@ export function analyzePreflight(job: JobConfig, hw: PreflightHardware): Finding
   const datasets = process.datasets ?? [];
 
   const size = archSize(model?.arch);
-  const tFactor = quantFactor(model?.qtype, model?.quantize);
-  const teFactor = quantFactor(model?.qtype_te, model?.quantize_te);
+  // Pre-quantized archs: archSize is already the quantized resident size, so the
+  // quantize flag must not scale it again (convrot8 would otherwise halve it twice).
+  const preq = isPrequantized(model?.arch);
+  const tFactor = preq ? 1 : quantFactor(model?.qtype, model?.quantize);
+  const teFactor = preq ? 1 : quantFactor(model?.qtype_te, model?.quantize_te);
 
   const transformerEff = size.transformerGB * tFactor;
   const teEff = size.teGB * teFactor;
