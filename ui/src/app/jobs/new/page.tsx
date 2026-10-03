@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { defaultJobConfig, defaultDatasetConfig, migrateJobConfig } from './jobConfig';
-import { jobTypeOptions, modelArchs } from './options';
+import { jobTypeOptions } from './options';
+import { useModelArchs } from '@/extensions/modelArchs';
 import { JobConfig } from '@/types';
 import { objectCopy } from '@/utils/basic';
 import { nextCloneName } from '@/utils/naming';
@@ -31,6 +32,7 @@ import SplitWorkspace, { ChangeEntry } from './SplitWorkspace';
 const isDev = process.env.NODE_ENV === 'development';
 
 export default function TrainingForm() {
+  const { archs: modelArchs } = useModelArchs();
   const router = useRouter();
   const searchParams = useSearchParams();
   const runId = searchParams.get('id');

@@ -5,14 +5,13 @@ import { BookText } from 'lucide-react';
 import PresetPicker from './PresetPicker';
 import useSettings from '@/hooks/useSettings';
 import {
-  modelArchs,
   ModelArch,
-  groupedModelOptions,
   quantizationOptions,
   defaultQtype,
   jobTypeOptions,
   SampleTags,
 } from './options';
+import { useModelArchs } from '@/extensions/modelArchs';
 import { defaultCompileOptions, defaultDatasetConfig } from './jobConfig';
 import { GroupedSelectOption, JobConfig, SelectOption } from '@/types';
 import { objectCopy, tagsToObj, objToTags } from '@/utils/basic';
@@ -77,6 +76,8 @@ export default function SimpleJob({
   // Basename of the dataset whose gallery is open, or null when closed.
   const [galleryDataset, setGalleryDataset] = useState<string | null>(null);
 
+  const { archs: modelArchs, groupedModelOptions } = useModelArchs();
+
   // Filter the architecture dropdown by the user's enabled list (set in
   // Settings → Models). Empty list = show every architecture.
   const filteredModelOptions = useMemo(() => {
@@ -102,7 +103,7 @@ export default function SimpleJob({
 
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
-  }, [jobConfig.config.process[0].model.arch]);
+  }, [modelArchs, jobConfig.config.process[0].model.arch]);
 
   // Detected GPU stats for the PresetPicker. Picks the selected GPU when
   // gpuIDs is set, otherwise the first GPU.
@@ -349,7 +350,7 @@ export default function SimpleJob({
                 label="Model Architecture"
                 value={jobConfig.config.process[0].model.arch}
                 onChange={value => {
-                  handleModelArchChange(jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
+                  handleModelArchChange(modelArchs, jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
                 }}
                 options={filteredModelOptions}
               />

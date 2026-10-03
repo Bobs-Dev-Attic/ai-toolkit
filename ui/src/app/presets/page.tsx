@@ -5,7 +5,7 @@ import { Button } from '@headlessui/react';
 import { TopBar, MainContent } from '@/components/layout';
 import { apiClient } from '@/utils/api';
 import { Plus, Trash2, Pencil, Save, X, Download, Upload, Search, Copy } from 'lucide-react';
-import { modelArchs } from '@/app/jobs/new/options';
+import { useModelArchs } from '@/extensions/modelArchs';
 import { CONFIG_PRESETS } from '@/app/jobs/new/configPresets';
 import classNames from 'classnames';
 
@@ -67,6 +67,7 @@ const overridesPlaceholder = `{
 }`;
 
 export default function PresetsPage() {
+  const { archs: modelArchs } = useModelArchs();
   const [presets, setPresets] = useState<UserPreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -109,7 +110,7 @@ export default function PresetsPage() {
 
   const archOptions = useMemo(
     () => modelArchs.map(a => ({ value: a.name, label: a.label })),
-    [],
+    [modelArchs],
   );
 
   const filter = (rows: UserPreset[]) => {

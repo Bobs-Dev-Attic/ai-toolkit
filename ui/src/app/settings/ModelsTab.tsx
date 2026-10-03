@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { apiClient } from '@/utils/api';
-import { modelArchs } from '@/app/jobs/new/options';
+import { useModelArchs } from '@/extensions/modelArchs';
 import { Folder, Loader2, Search, Check, X, ChevronDown, ChevronRight } from 'lucide-react';
 
 interface InstalledModel {
@@ -60,6 +60,7 @@ export default function ModelsTab({
   onEnabledModelArchsChange,
   onSelectModel,
 }: Props) {
+  const { archs: modelArchs } = useModelArchs();
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -113,7 +114,7 @@ export default function ModelsTab({
         items: items.sort((a, b) => a.label.localeCompare(b.label)),
       }))
       .sort((a, b) => a.group.localeCompare(b.group));
-  }, []);
+  }, [modelArchs]);
 
   const filteredArchGroups = useMemo(() => {
     if (!archSearch.trim()) return groupedArchs;

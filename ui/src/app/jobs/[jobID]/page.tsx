@@ -2,7 +2,7 @@
 
 import { useState, use } from 'react';
 import { FaChevronLeft } from 'react-icons/fa';
-import { MdDashboard, MdImage, MdShowChart, MdCode, MdExtension, MdMemory, MdInsights } from 'react-icons/md';
+import { MdDashboard, MdImage, MdShowChart, MdCode, MdExtension, MdMemory, MdInsights, MdNotes } from 'react-icons/md';
 import { Button } from '@headlessui/react';
 import { TopBar, MainContent } from '@/components/layout';
 import useJob from '@/hooks/useJob';
@@ -16,11 +16,12 @@ import JobLossGraph from '@/components/JobLossGraph';
 import JobSystemStats from '@/components/JobSystemStats';
 import JobAnalysis from '@/components/JobAnalysis';
 import JobPlugin from '@/components/JobPlugin';
+import JobNotes from '@/components/JobNotes';
 import { Job } from '@prisma/client';
 import { apiClient } from '@/utils/api';
 import { isSamplingEnabled } from '@/utils/jobs';
 
-type PageKey = 'overview' | 'samples' | 'analysis' | 'config' | 'loss_log' | 'system_stats' | 'plugin';
+type PageKey = 'overview' | 'samples' | 'analysis' | 'config' | 'loss_log' | 'system_stats' | 'notes' | 'plugin';
 
 interface Page {
   name: string;
@@ -79,6 +80,13 @@ const pages: Page[] = [
     icon: MdCode,
     component: JobConfigViewer,
     mainCss: 'pt-[80px] px-0 pb-0',
+  },
+  {
+    name: 'Notes',
+    value: 'notes',
+    icon: MdNotes,
+    component: JobNotes,
+    mainCss: 'pt-24 pb-4',
   },
   {
     name: 'Plugin',
